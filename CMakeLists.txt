@@ -45,6 +45,7 @@ target_include_directories(pdfmaestro PRIVATE
 target_compile_options(pdfmaestro PRIVATE
     ${POPPLER_QT6_CFLAGS_OTHER}
     ${QPDF_CFLAGS_OTHER}
+    -DPOINTERHOLDER_TRANSITION=4
 )
 
 target_link_libraries(pdfmaestro

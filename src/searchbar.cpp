@@ -1,7 +1,7 @@
 #include "searchbar.h"
 #include <QHBoxLayout>
 #include <QKeyEvent>
-#include <poppler-page.h>
+#include <poppler-qt6.h>
 
 SearchBar::SearchBar(QWidget* parent) : QWidget(parent) {
     auto* layout = new QHBoxLayout(this);

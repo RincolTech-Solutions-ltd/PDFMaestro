@@ -9,6 +9,7 @@
 #include "pagemanager.h"
 #include "searchbar.h"
 #include "operations.h"
+#include "toc.h"
 
 class MainWindow : public QMainWindow {
     Q_OBJECT

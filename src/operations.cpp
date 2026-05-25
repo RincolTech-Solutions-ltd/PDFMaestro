@@ -6,6 +6,7 @@
 #include <QFile>
 #include <QBuffer>
 #include <cmath>
+#include <memory>
 #include <sstream>
 
 namespace Operations {
@@ -14,12 +15,29 @@ static std::vector<QPDFPageObjectHelper> pages(QPDF& pdf) {
     return QPDFPageDocumentHelper(pdf).getAllPages();
 }
 
+// QPDF Buffer::getBuffer() returns unsigned char* with no str() method.
+static std::string bufToStr(const std::shared_ptr<Buffer>& buf) {
+    return std::string(reinterpret_cast<const char*>(buf->getBuffer()),
+                       buf->getSize());
+}
+
+static std::string streamToStr(QPDFObjectHandle obj) {
+    std::string out;
+    if (obj.isStream())
+        out = bufToStr(obj.getStreamData(qpdf_dl_all));
+    else if (obj.isArray())
+        for (int i = 0; i < obj.getArrayNItems(); ++i)
+            out += bufToStr(obj.getArrayItem(i).getStreamData(qpdf_dl_all));
+    return out;
+}
+
 QByteArray toBytes(QPDF& pdf) {
     QPDFWriter w(pdf);
     w.setOutputMemory();
     w.write();
     auto buf = w.getBuffer();
-    return QByteArray(buf->getBuffer(), static_cast<int>(buf->getSize()));
+    return QByteArray(reinterpret_cast<const char*>(buf->getBuffer()),
+                      static_cast<int>(buf->getSize()));
 }
 
 static void writeTo(QPDF& pdf, const QString& path) {
@@ -131,13 +149,13 @@ void mergeInto(QPDF& pdf, const QStringList& otherPaths, int insertAt) {
     }
 }
 
-static QPDF extractPages(QPDF& src, int first, int last) {
-    QPDF out;
-    out.emptyPDF();
-    QPDFPageDocumentHelper odh(out);
+static std::shared_ptr<QPDF> extractPages(QPDF& src, int first, int last) {
+    auto out = std::make_shared<QPDF>();
+    out->emptyPDF();
+    QPDFPageDocumentHelper odh(*out);
     auto ps = pages(src);
     for (int i = first; i <= last && i < (int)ps.size(); ++i)
-        odh.addPage(out.copyForeignObject(ps[i].getObjectHandle()), false);
+        odh.addPage(out->copyForeignObject(ps[i].getObjectHandle()), false);
     return out;
 }
 
@@ -149,7 +167,7 @@ QStringList splitByRanges(QPDF& pdf, const QVector<Range>& ranges,
     for (const auto& r : ranges) {
         auto part = extractPages(pdf, r.first, r.last);
         QString path = outDir + "/" + baseName + QString("_%1.pdf").arg(n++);
-        writeTo(part, path);
+        writeTo(*part, path);
         out << path;
     }
     return out;
@@ -222,14 +240,7 @@ void overlaySignatureOnPage(QPDF& pdf, int pageIdx,
     else if (position == "center")   { x = (pw-sw)/2; y = (ph-sh)/2; }
 
     // Build Form XObject from sig page content
-    auto sigContent = sigPage.getKey("/Contents");
-    std::string streamData;
-    if (sigContent.isStream())
-        streamData = sigContent.getStreamData(qpdf_dl_all)->str();
-    else if (sigContent.isArray()) {
-        for (int i=0; i<sigContent.getArrayNItems(); ++i)
-            streamData += sigContent.getArrayItem(i).getStreamData(qpdf_dl_all)->str();
-    }
+    std::string streamData = streamToStr(sigPage.getKey("/Contents"));
 
     auto form = QPDFObjectHandle::newStream(&pdf, streamData);
     auto formDict = form.getDict();
@@ -258,14 +269,7 @@ void overlaySignatureOnPage(QPDF& pdf, int pageIdx,
     std::ostringstream op;
     op << "\nq 1 0 0 1 " << x << " " << y << " cm /" << ns << " Do Q\n";
 
-    auto existing = pageObj.getKey("/Contents");
-    std::string existingData;
-    if (existing.isStream())
-        existingData = existing.getStreamData(qpdf_dl_all)->str();
-    else if (existing.isArray()) {
-        for (int i=0; i<existing.getArrayNItems(); ++i)
-            existingData += existing.getArrayItem(i).getStreamData(qpdf_dl_all)->str();
-    }
+    std::string existingData = streamToStr(pageObj.getKey("/Contents"));
     existingData += op.str();
     pageObj.replaceKey("/Contents",
                        QPDFObjectHandle::newStream(&pdf, existingData));
@@ -319,14 +323,7 @@ void overlayImageOnPage(QPDF& pdf, int pageIdx, const QImage& img,
     op << "\nq " << sigW << " 0 0 " << sigH << " " << x << " " << y
        << " cm /" << ns << " Do Q\n";
 
-    auto existing = pageObj.getKey("/Contents");
-    std::string existingData;
-    if (existing.isStream())
-        existingData = existing.getStreamData(qpdf_dl_all)->str();
-    else if (existing.isArray()) {
-        for (int i=0; i<existing.getArrayNItems(); ++i)
-            existingData += existing.getArrayItem(i).getStreamData(qpdf_dl_all)->str();
-    }
+    std::string existingData = streamToStr(pageObj.getKey("/Contents"));
     existingData += op.str();
     pageObj.replaceKey("/Contents",
                        QPDFObjectHandle::newStream(&pdf, existingData));

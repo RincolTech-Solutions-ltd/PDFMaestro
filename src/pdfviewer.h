@@ -1,6 +1,7 @@
 #pragma once
 #include <QGraphicsView>
 #include <QGraphicsScene>
+#include <QGraphicsPixmapItem>
 #include <QTimer>
 #include <QByteArray>
 #include <memory>
