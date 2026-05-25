@@ -69,6 +69,9 @@ class AnnotationOverlay(QWidget):
     def set_tool(self, tool: str):
         self._tool = tool
         self.setCursor(QCursor(_CURSORS.get(tool, Qt.ArrowCursor)))
+        # Pointer: pass events through to QGraphicsView for panning/scrolling.
+        # Any other tool: overlay captures events for drawing.
+        self.setAttribute(Qt.WA_TransparentForMouseEvents, tool == TOOL_POINTER)
         self._reset_draw_state()
         self.update()
 

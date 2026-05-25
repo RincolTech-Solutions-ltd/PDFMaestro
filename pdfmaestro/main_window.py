@@ -372,8 +372,8 @@ class MainWindow(QMainWindow):
         tb.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
         self.addToolBar(tb)
 
-        tb.addAction(self._act("Open", "Ctrl+O", self._on_open))
-        tb.addAction(self._act("Save", "Ctrl+S", self._on_save))
+        tb.addAction(self._act("Open", None, self._on_open))
+        tb.addAction(self._act("Save", None, self._on_save))
         tb.addSeparator()
 
         tb.addAction(self._act("◀", None, self._viewer.prev_page))
@@ -1046,9 +1046,10 @@ class MainWindow(QMainWindow):
 
     # ── Helper ────────────────────────────────────────────────────────────────
 
-    @staticmethod
-    def _act(label: str, shortcut: str | None, slot) -> QAction:
-        a = QAction(label)
+    def _act(self, label: str, shortcut: str | None, slot) -> QAction:
+        # Parent=self keeps the C++ QAction alive; without it Python GC deletes
+        # the object immediately after addAction() returns (dangling pointer).
+        a = QAction(label, self)
         if shortcut:
             a.setShortcut(QKeySequence(shortcut))
         a.triggered.connect(slot)
