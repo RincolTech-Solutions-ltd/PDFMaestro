@@ -7,8 +7,8 @@ set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 
 find_package(Qt6 REQUIRED COMPONENTS Core Widgets Gui)
-find_package(Poppler REQUIRED COMPONENTS Qt6)
 find_package(PkgConfig REQUIRED)
+pkg_check_modules(POPPLER_QT6 REQUIRED poppler-qt6)
 pkg_check_modules(QPDF REQUIRED libqpdf)
 
 # Optional KDE Frameworks — used when available, falls back to plain Qt
@@ -36,13 +36,22 @@ set(SOURCES
 
 add_executable(pdfmaestro ${SOURCES})
 
-target_include_directories(pdfmaestro PRIVATE src ${QPDF_INCLUDE_DIRS})
+target_include_directories(pdfmaestro PRIVATE
+    src
+    ${POPPLER_QT6_INCLUDE_DIRS}
+    ${QPDF_INCLUDE_DIRS}
+)
+
+target_compile_options(pdfmaestro PRIVATE
+    ${POPPLER_QT6_CFLAGS_OTHER}
+    ${QPDF_CFLAGS_OTHER}
+)
 
 target_link_libraries(pdfmaestro
     Qt6::Core
     Qt6::Widgets
     Qt6::Gui
-    Poppler::Qt6
+    ${POPPLER_QT6_LIBRARIES}
     ${QPDF_LIBRARIES}
 )
 
