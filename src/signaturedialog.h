@@ -19,9 +19,6 @@ public:
 
 private slots:
     void onAccept();
-    void onClear();
-    void onColorChanged(int index);
-    void onSizeChanged(int value);
 
 private:
     QImage renderTyped() const;
