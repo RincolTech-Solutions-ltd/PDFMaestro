@@ -6,15 +6,223 @@ import pikepdf
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QSplitter, QToolBar, QStatusBar,
     QTabWidget, QLabel, QFileDialog, QSpinBox, QComboBox,
-    QMessageBox, QDialog,
+    QMessageBox, QDialog, QButtonGroup, QLineEdit, QPushButton,
+    QHBoxLayout, QVBoxLayout, QCheckBox, QFrame, QSizePolicy,
+    QTreeWidget, QTreeWidgetItem, QStackedWidget, QDialogButtonBox,
+    QFormLayout, QRadioButton, QApplication,
 )
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QAction, QKeySequence
+from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtGui import QAction, QKeySequence, QActionGroup, QColor, QPalette
 
 from pdfmaestro.viewer import PDFViewer
 from pdfmaestro.page_manager import PageManagerWidget
-from pdfmaestro import operations
+from pdfmaestro import operations, annotations
 from pdfmaestro.dialogs import MergeDialog, SplitDialog, CropDialog
+from pdfmaestro.signature import SignatureDialog, rgba_pil_to_pdf
+from pdfmaestro.annotation_overlay import (
+    TOOL_POINTER, TOOL_HIGHLIGHT, TOOL_NOTE, TOOL_INK, TOOL_STAMP, TOOL_REDACT,
+)
+from pdfmaestro import search as search_engine
+from pdfmaestro.toc import read_toc
+from pdfmaestro import config as cfg
+
+
+# ── Welcome screen ───────────────────────────────────────────────────────────
+
+class WelcomeWidget(QWidget):
+    """Shown in place of the viewer when no document is open."""
+
+    open_requested  = Signal()
+    recent_selected = Signal(str)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._init_ui()
+
+    def _init_ui(self):
+        root = QVBoxLayout(self)
+        root.setAlignment(Qt.AlignHCenter | Qt.AlignVCenter)
+        root.setSpacing(20)
+
+        title = QLabel("PDFMaestro")
+        title.setStyleSheet("font-size: 32px; font-weight: bold; color: #5b9fe8;")
+        title.setAlignment(Qt.AlignHCenter)
+        root.addWidget(title)
+
+        sub = QLabel("Open a PDF to get started")
+        sub.setStyleSheet("font-size: 14px; color: #888;")
+        sub.setAlignment(Qt.AlignHCenter)
+        root.addWidget(sub)
+
+        open_btn = QPushButton("Open PDF…")
+        open_btn.setFixedWidth(180)
+        open_btn.setFixedHeight(40)
+        open_btn.setStyleSheet(
+            "QPushButton { background: #3d5a8a; color: white; border: none;"
+            "  border-radius: 6px; font-size: 14px; }"
+            " QPushButton:hover { background: #4e6fa3; }"
+        )
+        open_btn.clicked.connect(self.open_requested)
+        root.addWidget(open_btn, alignment=Qt.AlignHCenter)
+
+        self._recent_frame = QFrame()
+        recent_layout = QVBoxLayout(self._recent_frame)
+        recent_layout.setSpacing(4)
+        recent_lbl = QLabel("Recent files")
+        recent_lbl.setStyleSheet("color: #aaa; font-size: 12px;")
+        recent_layout.addWidget(recent_lbl)
+        self._recent_list_layout = QVBoxLayout()
+        self._recent_list_layout.setSpacing(2)
+        recent_layout.addLayout(self._recent_list_layout)
+        root.addWidget(self._recent_frame, alignment=Qt.AlignHCenter)
+
+        self.refresh_recent()
+
+    def refresh_recent(self):
+        # Clear old buttons
+        while self._recent_list_layout.count():
+            item = self._recent_list_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
+        recent = cfg.get_recent()
+        self._recent_frame.setVisible(bool(recent))
+        for path in recent:
+            import os
+            btn = QPushButton(os.path.basename(path))
+            btn.setFixedWidth(300)
+            btn.setStyleSheet(
+                "QPushButton { text-align: left; padding: 4px 8px; color: #5b9fe8;"
+                "  background: transparent; border: none; }"
+                " QPushButton:hover { color: #7eb8ff; text-decoration: underline; }"
+            )
+            btn.setToolTip(path)
+            btn.clicked.connect(lambda checked=False, p=path: self.recent_selected.emit(p))
+            self._recent_list_layout.addWidget(btn)
+
+
+# ── Settings dialog ───────────────────────────────────────────────────────────
+
+class SettingsDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Settings")
+        self.setMinimumWidth(320)
+
+        layout = QVBoxLayout(self)
+        form = QFormLayout()
+        form.setSpacing(12)
+
+        # Theme
+        theme_row = QHBoxLayout()
+        self._light_radio = QRadioButton("Light")
+        self._dark_radio  = QRadioButton("Dark")
+        (self._dark_radio if cfg.is_dark() else self._light_radio).setChecked(True)
+        theme_row.addWidget(self._light_radio)
+        theme_row.addWidget(self._dark_radio)
+        form.addRow("Theme:", theme_row)
+
+        # Default zoom
+        self._zoom_combo = QComboBox()
+        self._zoom_combo.addItems(["50%", "75%", "100%", "125%", "150%", "Fit Width", "Fit Page"])
+        saved_zoom = cfg.get_settings().value("default_zoom", "100%")
+        idx = self._zoom_combo.findText(saved_zoom)
+        self._zoom_combo.setCurrentIndex(idx if idx >= 0 else 2)
+        form.addRow("Default zoom:", self._zoom_combo)
+
+        layout.addLayout(form)
+        layout.addSpacing(8)
+
+        btns = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        btns.accepted.connect(self._save)
+        btns.rejected.connect(self.reject)
+        layout.addWidget(btns)
+
+    def _save(self):
+        cfg.set_dark(self._dark_radio.isChecked())
+        cfg.get_settings().setValue("default_zoom", self._zoom_combo.currentText())
+        self.accept()
+
+
+# ── Search bar widget ─────────────────────────────────────────────────────────
+
+class SearchBar(QFrame):
+    """Slim find-bar that docks at the bottom of the viewer area."""
+
+    closed = Signal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFrameShape(QFrame.StyledPanel)
+        self.setStyleSheet(
+            "QFrame { background: #2b3142; border-top: 1px solid #444; }"
+            " QLabel { color: #ccc; }"
+            " QLineEdit { background: #1e2530; color: #eee; border: 1px solid #555;"
+            "   border-radius: 3px; padding: 2px 6px; }"
+            " QPushButton { color: #ccc; background: #3a4055; border: 1px solid #555;"
+            "   border-radius: 3px; padding: 2px 10px; }"
+            " QPushButton:hover { background: #4a5070; }"
+        )
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(8, 4, 8, 4)
+        layout.setSpacing(6)
+
+        self.input = QLineEdit()
+        self.input.setPlaceholderText("Find in document…")
+        self.input.setFixedWidth(260)
+        self.input.setClearButtonEnabled(True)
+        layout.addWidget(self.input)
+
+        self.btn_prev = QPushButton("◀")
+        self.btn_prev.setFixedWidth(32)
+        self.btn_next = QPushButton("▶")
+        self.btn_next.setFixedWidth(32)
+        layout.addWidget(self.btn_prev)
+        layout.addWidget(self.btn_next)
+
+        self.match_label = QLabel("No results")
+        layout.addWidget(self.match_label)
+
+        layout.addSpacing(12)
+        self.case_check = QCheckBox("Match case")
+        self.case_check.setStyleSheet("color: #ccc;")
+        layout.addWidget(self.case_check)
+
+        self.word_check = QCheckBox("Whole word")
+        self.word_check.setStyleSheet("color: #ccc;")
+        layout.addWidget(self.word_check)
+
+        layout.addStretch()
+
+        close_btn = QPushButton("✕")
+        close_btn.setFixedWidth(28)
+        close_btn.clicked.connect(self.hide)
+        layout.addWidget(close_btn)
+
+    def hideEvent(self, event):
+        super().hideEvent(event)
+        self.closed.emit()
+
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key_Escape:
+            self.hide()
+        elif event.key() in (Qt.Key_Return, Qt.Key_Enter):
+            self.btn_next.click()
+        else:
+            super().keyPressEvent(event)
+
+    def set_result(self, current: int, total: int):
+        if total == 0:
+            self.match_label.setText("No results")
+            self.match_label.setStyleSheet("color: #e06060;")
+        else:
+            self.match_label.setText(f"{current} / {total}")
+            self.match_label.setStyleSheet("color: #88cc88;")
+
+    def clear_result(self):
+        self.match_label.setText("")
+        self.match_label.setStyleSheet("color: #ccc;")
 
 
 class MainWindow(QMainWindow):
@@ -26,8 +234,15 @@ class MainWindow(QMainWindow):
         # Document state
         self._pdf: pikepdf.Pdf | None = None
         self._current_path: str | None = None
-        self._tmp_path: str | None = None      # reused temp file for viewer reload
+        self._tmp_path: str | None = None
         self._modified: bool = False
+
+        # Search state
+        self._search_matches: list[search_engine.SearchMatch] = []
+        self._search_idx: int = 0
+
+        # Presentation mode
+        self._in_presentation: bool = False
 
         self._viewer = PDFViewer()
         self._page_manager = PageManagerWidget()
@@ -46,14 +261,57 @@ class MainWindow(QMainWindow):
         self._left_panel.setMinimumWidth(180)
         self._left_panel.setMaximumWidth(300)
         self._left_panel.addTab(self._page_manager, "Pages")
-        self._left_panel.addTab(QWidget(), "Bookmarks")
+        self._left_panel.addTab(self._build_bookmarks_panel(), "Bookmarks")
         self._left_panel.addTab(QWidget(), "Annotations")
 
+        # Right side: stacked (welcome | viewer+searchbar)
+        self._view_stack = QStackedWidget()
+
+        self._welcome = WelcomeWidget()
+        self._welcome.open_requested.connect(self._on_open)
+        self._welcome.recent_selected.connect(self._open_path)
+        self._view_stack.addWidget(self._welcome)      # index 0
+
+        view_container = QWidget()
+        vc_layout = QVBoxLayout(view_container)
+        vc_layout.setContentsMargins(0, 0, 0, 0)
+        vc_layout.setSpacing(0)
+        vc_layout.addWidget(self._viewer)
+
+        self._search_bar = SearchBar()
+        self._search_bar.hide()
+        vc_layout.addWidget(self._search_bar)
+        self._view_stack.addWidget(view_container)     # index 1
+
         splitter.addWidget(self._left_panel)
-        splitter.addWidget(self._viewer)
+        splitter.addWidget(self._view_stack)
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
         self.setCentralWidget(splitter)
+
+    def _build_bookmarks_panel(self) -> QWidget:
+        w = QWidget()
+        layout = QVBoxLayout(w)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        self._toc_tree = QTreeWidget()
+        self._toc_tree.setHeaderLabels(["Title", "Page"])
+        self._toc_tree.setColumnWidth(0, 180)
+        self._toc_tree.setColumnWidth(1, 40)
+        self._toc_tree.setAlternatingRowColors(True)
+        self._toc_tree.setAnimated(True)
+        self._toc_tree.itemClicked.connect(self._on_toc_item_clicked)
+
+        self._toc_empty_label = QLabel("No bookmarks in this document.")
+        self._toc_empty_label.setAlignment(Qt.AlignCenter)
+        self._toc_empty_label.setWordWrap(True)
+        self._toc_empty_label.setStyleSheet("color: #888; padding: 12px;")
+
+        layout.addWidget(self._toc_tree)
+        layout.addWidget(self._toc_empty_label)
+        self._toc_tree.hide()
+        return w
 
     def _build_menu(self):
         mb = self.menuBar()
@@ -62,6 +320,9 @@ class MainWindow(QMainWindow):
         fm.addAction(self._act("&Open…",    "Ctrl+O",       self._on_open))
         fm.addAction(self._act("&Save",     "Ctrl+S",       self._on_save))
         fm.addAction(self._act("Save &As…", "Ctrl+Shift+S", self._on_save_as))
+        fm.addSeparator()
+        self._recent_menu = fm.addMenu("Open &Recent")
+        self._rebuild_recent_menu()
         fm.addSeparator()
         fm.addAction(self._act("&Merge PDFs…", None, self._on_merge))
         fm.addAction(self._act("S&plit PDF…",  None, self._on_split))
@@ -80,17 +341,28 @@ class MainWindow(QMainWindow):
         vm.addAction(self._act("&Next Page",     "Right", self._viewer.next_page))
         vm.addAction(self._act("&Last Page",     "End",   self._viewer.last_page))
         vm.addSeparator()
-        vm.addAction(self._act("&Full Screen",      "F11", self._toggle_fullscreen))
-        vm.addAction(self._act("&Presentation Mode","F5",  lambda: None))
+        vm.addAction(self._act("&Full Screen",       "F11", self._toggle_fullscreen))
+        vm.addAction(self._act("&Presentation Mode", "F5",  self._toggle_presentation))
+        vm.addSeparator()
+        self._dark_action = self._act("&Dark Mode", "Ctrl+Shift+D", self._toggle_dark)
+        self._dark_action.setCheckable(True)
+        self._dark_action.setChecked(cfg.is_dark())
+        vm.addAction(self._dark_action)
+        vm.addSeparator()
+        vm.addAction(self._act("&Settings…", None, self._on_settings))
 
         tm = mb.addMenu("&Tools")
-        tm.addAction(self._act("&Insert Signature…", "Ctrl+Shift+G", lambda: None))
-        tm.addAction(self._act("&Annotate",           None, lambda: None))
-        tm.addAction(self._act("&Search…",           "Ctrl+F", lambda: None))
+        tm.addAction(self._act("&Insert Signature…", "Ctrl+Shift+G", self._on_sign))
+        tm.addAction(self._act("&Highlight",          "Ctrl+Shift+H", lambda: self._viewer.set_annotation_tool(TOOL_HIGHLIGHT)))
+        tm.addAction(self._act("Sticky &Note",        "Ctrl+Shift+N", lambda: self._viewer.set_annotation_tool(TOOL_NOTE)))
+        tm.addAction(self._act("&Ink / Freehand",     "Ctrl+Shift+I", lambda: self._viewer.set_annotation_tool(TOOL_INK)))
+        tm.addAction(self._act("&Stamp",              "Ctrl+Shift+T", lambda: self._viewer.set_annotation_tool(TOOL_STAMP)))
+        tm.addAction(self._act("&Search…",           "Ctrl+F", self._open_search))
         tm.addAction(self._act("&Crop Pages…",        None, self._on_crop))
         tm.addAction(self._act("&Rotate CW",          None, lambda: self._rotate_current(90)))
         tm.addAction(self._act("Rotate &CCW",         None, lambda: self._rotate_current(-90)))
-        tm.addAction(self._act("Re&dact…",            None, lambda: None))
+        tm.addAction(self._act("Re&dact…",            None, lambda: self._viewer.set_annotation_tool(TOOL_REDACT)))
+        tm.addAction(self._act("&OCR…",               None, self._on_ocr))
         tm.addSeparator()
         tm.addAction(self._act("Document &Properties…", None, lambda: None))
 
@@ -128,14 +400,35 @@ class MainWindow(QMainWindow):
         tb.addSeparator()
 
         for label, slot in [
-            ("Merge",    self._on_merge),
-            ("Split",    self._on_split),
-            ("Crop",     self._on_crop),
-            ("Sign",     lambda: None),
-            ("Annotate", lambda: None),
-            ("Search",   lambda: None),
+            ("Merge",  self._on_merge),
+            ("Split",  self._on_split),
+            ("Crop",   self._on_crop),
+            ("Sign",   self._on_sign),
+            ("Search", self._open_search),
         ]:
             tb.addAction(self._act(label, None, slot))
+
+        tb.addSeparator()
+
+        # Annotation tool mode group (mutually exclusive, checkable)
+        self._tool_group = QActionGroup(self)
+        self._tool_group.setExclusive(True)
+        for label, tool in [
+            ("Pointer",    TOOL_POINTER),
+            ("Highlight",  TOOL_HIGHLIGHT),
+            ("Note",       TOOL_NOTE),
+            ("Ink",        TOOL_INK),
+            ("Stamp",      TOOL_STAMP),
+            ("Redact",     TOOL_REDACT),
+        ]:
+            act = QAction(label, self)
+            act.setCheckable(True)
+            act.setData(tool)
+            act.triggered.connect(lambda checked, t=tool: self._viewer.set_annotation_tool(t))
+            self._tool_group.addAction(act)
+            tb.addAction(act)
+        # Default to pointer
+        self._tool_group.actions()[0].setChecked(True)
 
     def _build_statusbar(self):
         sb = QStatusBar()
@@ -171,6 +464,17 @@ class MainWindow(QMainWindow):
         self._page_manager.page_deleted.connect(self._on_page_deleted)
         self._page_manager.page_rotated.connect(self._on_page_rotated)
 
+        # Annotation overlay → pikepdf writers
+        self._viewer.annotation_committed.connect(self._on_annotation_committed)
+
+        # Search bar
+        self._search_bar.input.textChanged.connect(self._on_search_text_changed)
+        self._search_bar.btn_next.clicked.connect(self._search_next)
+        self._search_bar.btn_prev.clicked.connect(self._search_prev)
+        self._search_bar.case_check.toggled.connect(self._on_search_text_changed)
+        self._search_bar.word_check.toggled.connect(self._on_search_text_changed)
+        self._search_bar.closed.connect(lambda: self._on_search_bar_visibility(False))
+
     # ── Document loading ──────────────────────────────────────────────────────
 
     def _on_document_loaded(self, path: str, count: int):
@@ -182,6 +486,52 @@ class MainWindow(QMainWindow):
         self._page_spin.blockSignals(False)
         self._page_total.setText(f" / {count}")
         self._page_manager.load_document(path, count)
+        self._load_toc(path)
+
+    def _load_toc(self, path: str):
+        self._toc_tree.clear()
+        try:
+            import pypdfium2 as pdfium
+            doc = pdfium.PdfDocument(path)
+            entries = read_toc(doc)
+            doc.close()
+        except Exception:
+            entries = []
+
+        if not entries:
+            self._toc_tree.hide()
+            self._toc_empty_label.show()
+            return
+
+        self._toc_empty_label.hide()
+        self._toc_tree.show()
+
+        # Build tree: maintain a stack of (level, QTreeWidgetItem)
+        stack: list[tuple[int, QTreeWidgetItem]] = []
+        for entry in entries:
+            item = QTreeWidgetItem()
+            item.setText(0, entry.title)
+            item.setText(1, str(entry.page_idx + 1) if entry.page_idx >= 0 else "—")
+            item.setData(0, Qt.UserRole, entry.page_idx)
+            item.setToolTip(0, entry.title)
+
+            # Pop stack until we find a parent at level < entry.level
+            while stack and stack[-1][0] >= entry.level:
+                stack.pop()
+
+            if stack:
+                stack[-1][1].addChild(item)
+            else:
+                self._toc_tree.addTopLevelItem(item)
+
+            stack.append((entry.level, item))
+
+        self._toc_tree.expandToDepth(1)
+
+    def _on_toc_item_clicked(self, item: QTreeWidgetItem, _column: int):
+        page_idx = item.data(0, Qt.UserRole)
+        if page_idx is not None and page_idx >= 0:
+            self._viewer.go_to_page(page_idx)
 
     # ── Viewer / status bar sync ──────────────────────────────────────────────
 
@@ -190,6 +540,29 @@ class MainWindow(QMainWindow):
         self._page_spin.blockSignals(True)
         self._page_spin.setValue(current)
         self._page_spin.blockSignals(False)
+        self._sync_toc_selection(current - 1)
+
+    def _sync_toc_selection(self, page_idx: int):
+        """Select the last TOC item whose page is <= current page."""
+        if not self._toc_tree.isVisible():
+            return
+        best: QTreeWidgetItem | None = None
+
+        def _walk(item: QTreeWidgetItem):
+            nonlocal best
+            p = item.data(0, Qt.UserRole)
+            if p is not None and 0 <= p <= page_idx:
+                best = item
+            for i in range(item.childCount()):
+                _walk(item.child(i))
+
+        for i in range(self._toc_tree.topLevelItemCount()):
+            _walk(self._toc_tree.topLevelItem(i))
+
+        if best:
+            self._toc_tree.blockSignals(True)
+            self._toc_tree.setCurrentItem(best)
+            self._toc_tree.blockSignals(False)
 
     def _on_zoom_changed(self, zoom: float):
         text = f"{round(zoom * 100)}%"
@@ -252,8 +625,10 @@ class MainWindow(QMainWindow):
         path, _ = QFileDialog.getOpenFileName(
             self, "Open PDF", "", "PDF Files (*.pdf);;All Files (*)"
         )
-        if not path:
-            return
+        if path:
+            self._open_path(path)
+
+    def _open_path(self, path: str):
         try:
             if self._pdf:
                 self._pdf.close()
@@ -261,6 +636,10 @@ class MainWindow(QMainWindow):
             self._current_path = path
             self._set_modified(False)
             self._viewer.load_document(path)
+            self._view_stack.setCurrentIndex(1)
+            cfg.add_recent(path)
+            self._rebuild_recent_menu()
+            self._welcome.refresh_recent()
         except Exception as exc:
             QMessageBox.critical(self, "Cannot open file", str(exc))
 
@@ -399,13 +778,271 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             QMessageBox.critical(self, "Crop failed", str(exc))
 
-    # ── View ──────────────────────────────────────────────────────────────────
+    # ── Search ────────────────────────────────────────────────────────────────
+
+    def _open_search(self):
+        self._search_bar.show()
+        self._search_bar.input.setFocus()
+        self._search_bar.input.selectAll()
+
+    def _on_search_bar_visibility(self, visible: bool):
+        if not visible:
+            self._clear_search_highlights()
+            self._search_matches = []
+            self._search_idx = 0
+            self._search_bar.clear_result()
+
+    def _on_search_text_changed(self, *_args):
+        query = self._search_bar.input.text().strip()
+        self._clear_search_highlights()
+        self._search_matches = []
+        self._search_idx = 0
+
+        if not query or not self._pdf or not self._current_path:
+            self._search_bar.set_result(0, 0)
+            return
+
+        # Search runs on the saved/temp file so pypdfium2 can open it
+        src = self._current_path
+        if self._modified and self._tmp_path:
+            self._pdf.save(self._tmp_path)
+            src = self._tmp_path
+
+        try:
+            import pypdfium2 as pdfium
+            doc = pdfium.PdfDocument(src)
+            self._search_matches = search_engine.find_all(
+                doc, query,
+                match_case=self._search_bar.case_check.isChecked(),
+                whole_word=self._search_bar.word_check.isChecked(),
+            )
+            doc.close()
+        except Exception:
+            self._search_matches = []
+
+        total = len(self._search_matches)
+        self._search_bar.set_result(1 if total else 0, total)
+        if total:
+            self._search_idx = 0
+            self._apply_search_highlights()
+            self._viewer.go_to_page(self._search_matches[0].page_idx)
+
+    def _search_next(self):
+        if not self._search_matches:
+            return
+        self._search_idx = (self._search_idx + 1) % len(self._search_matches)
+        self._search_bar.set_result(self._search_idx + 1, len(self._search_matches))
+        self._viewer.go_to_page(self._search_matches[self._search_idx].page_idx)
+
+    def _search_prev(self):
+        if not self._search_matches:
+            return
+        self._search_idx = (self._search_idx - 1) % len(self._search_matches)
+        self._search_bar.set_result(self._search_idx + 1, len(self._search_matches))
+        self._viewer.go_to_page(self._search_matches[self._search_idx].page_idx)
+
+    def _apply_search_highlights(self):
+        """Write temporary highlight annotations for all search matches."""
+        if not self._pdf:
+            return
+        for match in self._search_matches:
+            for rect in match.rects:
+                x0, y0, x1, y1 = rect
+                quad = (x0, y0, x1, y0, x0, y1, x1, y1)
+                annotations.add_highlight(
+                    self._pdf, match.page_idx, [quad],
+                    color=(1.0, 0.5, 0.0), opacity=0.35,
+                )
+        self._reload_viewer()
+
+    def _clear_search_highlights(self):
+        """Remove all search highlight annotations (orange ones) from every page."""
+        if not self._pdf:
+            return
+        changed = False
+        orange = (1.0, 0.5, 0.0)
+        for page in self._pdf.pages:
+            annots_raw = page.get("/Annots")
+            if annots_raw is None:
+                continue
+            surviving = []
+            for annot in annots_raw:
+                keep = True
+                if str(annot.get("/Subtype", "")) == "/Highlight":
+                    c = annot.get("/C")
+                    if c and len(c) == 3:
+                        color = tuple(round(float(v), 1) for v in c)
+                        if color == tuple(round(v, 1) for v in orange):
+                            keep = False
+                if keep:
+                    surviving.append(annot)
+            if len(surviving) != len(list(annots_raw)):
+                page["/Annots"] = pikepdf.Array(surviving)
+                changed = True
+        if changed:
+            self._reload_viewer()
+
+    # ── Annotations ───────────────────────────────────────────────────────────
+
+    def _on_annotation_committed(self, payload: dict):
+        if not self._require_pdf():
+            return
+        try:
+            kind     = payload["type"]
+            page_idx = payload["page_idx"]
+
+            if kind == "highlight":
+                annotations.add_highlight(
+                    self._pdf, page_idx,
+                    quads   = payload["quads"],
+                    color   = payload.get("color",   (1.0, 0.9, 0.0)),
+                    opacity = payload.get("opacity", 0.4),
+                )
+            elif kind == "note":
+                annotations.add_text_note(
+                    self._pdf, page_idx,
+                    x        = payload["x"],
+                    y        = payload["y"],
+                    contents = payload["contents"],
+                )
+            elif kind == "ink":
+                annotations.add_ink(
+                    self._pdf, page_idx,
+                    strokes = payload["strokes"],
+                    color   = payload.get("color", (0.0, 0.0, 0.8)),
+                    width   = payload.get("width", 2.0),
+                )
+            elif kind == "stamp":
+                annotations.add_stamp(
+                    self._pdf, page_idx,
+                    x    = payload["x"],
+                    y    = payload["y"],
+                    name = payload.get("name", "Approved"),
+                )
+            elif kind == "redact":
+                annotations.add_redact(
+                    self._pdf, page_idx,
+                    x0 = payload["x0"], y0 = payload["y0"],
+                    x1 = payload["x1"], y1 = payload["y1"],
+                )
+            else:
+                return
+
+            self._reload_viewer()
+        except Exception as exc:
+            QMessageBox.critical(self, "Annotation failed", str(exc))
+
+    # ── Sign ──────────────────────────────────────────────────────────────────
+
+    def _on_sign(self):
+        if not self._require_pdf():
+            return
+        dlg = SignatureDialog(self)
+        if not dlg.exec():
+            return
+        img, _ = dlg.get_result()
+        if img is None:
+            QMessageBox.warning(
+                self, "No signature",
+                "Please enter a name, draw a signature, or upload an image first.",
+            )
+            return
+        import tempfile, os
+        tmp_dir = tempfile.gettempdir()
+        sig_path = None
+        try:
+            sig_path = rgba_pil_to_pdf(img, tmp_dir)
+            operations.overlay_signature_on_page(
+                self._pdf, self._viewer.current_page, sig_path,
+                position="bottom-right",
+            )
+            self._reload_viewer()
+        except Exception as exc:
+            QMessageBox.critical(self, "Signature failed", str(exc))
+        finally:
+            if sig_path:
+                try:
+                    os.unlink(sig_path)
+                except OSError:
+                    pass
+
+    # ── View / theme / settings ───────────────────────────────────────────────
 
     def _toggle_fullscreen(self):
         if self.isFullScreen():
             self.showNormal()
         else:
             self.showFullScreen()
+
+    def _toggle_presentation(self):
+        if self._in_presentation:
+            self._exit_presentation()
+        else:
+            self._enter_presentation()
+
+    def _enter_presentation(self):
+        self._in_presentation = True
+        self.menuBar().hide()
+        for tb in self.findChildren(QToolBar):
+            tb.hide()
+        self._left_panel.hide()
+        self.showFullScreen()
+        self._viewer.setFocus()
+
+    def _exit_presentation(self):
+        self._in_presentation = False
+        self.menuBar().show()
+        for tb in self.findChildren(QToolBar):
+            tb.show()
+        self._left_panel.show()
+        self.showNormal()
+
+    def keyPressEvent(self, event):
+        if self._in_presentation:
+            k = event.key()
+            if k == Qt.Key_Escape:
+                self._exit_presentation()
+                return
+            if k in (Qt.Key_Right, Qt.Key_Down, Qt.Key_Space, Qt.Key_PageDown):
+                self._viewer.next_page()
+                return
+            if k in (Qt.Key_Left, Qt.Key_Up, Qt.Key_PageUp):
+                self._viewer.prev_page()
+                return
+        super().keyPressEvent(event)
+
+    def _toggle_dark(self):
+        dark = self._dark_action.isChecked()
+        cfg.set_dark(dark)
+        cfg.apply_theme(QApplication.instance(), dark)
+
+    def _on_settings(self):
+        dlg = SettingsDialog(self)
+        if dlg.exec():
+            dark = cfg.is_dark()
+            self._dark_action.setChecked(dark)
+            cfg.apply_theme(QApplication.instance(), dark)
+
+    def _on_ocr(self):
+        QMessageBox.information(
+            self, "OCR",
+            "OCR support requires Tesseract.\n\n"
+            "Install with:\n  sudo apt install tesseract-ocr\n\n"
+            "Full OCR integration is planned for a future release.",
+        )
+
+    def _rebuild_recent_menu(self):
+        self._recent_menu.clear()
+        recent = cfg.get_recent()
+        if not recent:
+            self._recent_menu.addAction("(empty)").setEnabled(False)
+            return
+        for path in recent:
+            act = self._recent_menu.addAction(os.path.basename(path))
+            act.setToolTip(path)
+            act.triggered.connect(lambda checked=False, p=path: self._open_path(p))
+        self._recent_menu.addSeparator()
+        self._recent_menu.addAction("Clear Recent", cfg.clear_recent)
 
     # ── Helper ────────────────────────────────────────────────────────────────
 
