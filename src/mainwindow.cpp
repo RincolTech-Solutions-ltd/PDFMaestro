@@ -162,8 +162,10 @@ void MainWindow::setupActions() {
 void MainWindow::setupMenus() {
     // File
     auto* file = menuBar()->addMenu("&File");
-    auto* open = file->addAction(QIcon::fromTheme("document-open"), "&Open…",
-        this, &MainWindow::onOpen, QKeySequence::Open);
+    auto* open = new QAction(QIcon::fromTheme("document-open"), "&Open…", this);
+    open->setShortcut(QKeySequence::Open);
+    connect(open, &QAction::triggered, this, &MainWindow::onOpen);
+    file->addAction(open);
     m_recentMenu = file->addMenu("Open &Recent");
     file->addSeparator();
     file->addAction(m_actSave);
@@ -171,8 +173,10 @@ void MainWindow::setupMenus() {
     file->addSeparator();
     file->addAction(m_actClose);
     file->addSeparator();
-    file->addAction("&Quit", qApp, &QApplication::quit, QKeySequence::Quit);
-    Q_UNUSED(open)
+    auto* quit = new QAction("&Quit", this);
+    quit->setShortcut(QKeySequence::Quit);
+    connect(quit, &QAction::triggered, qApp, &QApplication::quit);
+    file->addAction(quit);
     updateRecentMenu();
 
     // Edit
@@ -181,7 +185,9 @@ void MainWindow::setupMenus() {
     edit->addAction(m_actRotateCCW);
     edit->addAction(m_actDeletePage);
     edit->addSeparator();
-    edit->addAction("&Merge PDFs…", this, &MainWindow::onMerge);
+    auto* actMerge = new QAction("&Merge PDFs…", this);
+    connect(actMerge, &QAction::triggered, this, &MainWindow::onMerge);
+    edit->addAction(actMerge);
     edit->addAction(m_actSplit);
     edit->addAction(m_actCrop);
 
@@ -196,12 +202,25 @@ void MainWindow::setupMenus() {
     auto* view = menuBar()->addMenu("&View");
     view->addAction(m_actFind);
     view->addSeparator();
-    view->addAction("Zoom &In",    this, &MainWindow::onZoomIn,    QKeySequence::ZoomIn);
-    view->addAction("Zoom &Out",   this, &MainWindow::onZoomOut,   QKeySequence::ZoomOut);
-    view->addAction("&Reset Zoom", this, &MainWindow::onZoomReset, Qt::CTRL | Qt::Key_0);
+    auto* actZoomIn = new QAction("Zoom &In", this);
+    actZoomIn->setShortcut(QKeySequence::ZoomIn);
+    connect(actZoomIn, &QAction::triggered, this, &MainWindow::onZoomIn);
+    view->addAction(actZoomIn);
+    auto* actZoomOut = new QAction("Zoom &Out", this);
+    actZoomOut->setShortcut(QKeySequence::ZoomOut);
+    connect(actZoomOut, &QAction::triggered, this, &MainWindow::onZoomOut);
+    view->addAction(actZoomOut);
+    auto* actZoomReset = new QAction("&Reset Zoom", this);
+    actZoomReset->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_0));
+    connect(actZoomReset, &QAction::triggered, this, &MainWindow::onZoomReset);
+    view->addAction(actZoomReset);
     view->addSeparator();
-    view->addAction("Fit &Width",  this, &MainWindow::onFitWidth);
-    view->addAction("Fit &Page",   this, &MainWindow::onFitPage);
+    auto* actFitW = new QAction("Fit &Width", this);
+    connect(actFitW, &QAction::triggered, this, &MainWindow::onFitWidth);
+    view->addAction(actFitW);
+    auto* actFitP = new QAction("Fit &Page", this);
+    connect(actFitP, &QAction::triggered, this, &MainWindow::onFitPage);
+    view->addAction(actFitP);
     view->addSeparator();
     view->addAction(m_tocDock->toggleViewAction());
     view->addAction(m_pageDock->toggleViewAction());
@@ -522,7 +541,8 @@ void MainWindow::onApplyRedactions() {
             "This will permanently burn all redaction boxes into the PDF. Continue?")
         != QMessageBox::Yes) return;
     try {
-        Annotations::applyRedactions(m_qpdf);
+        for (int i = 0; i < m_viewer->pageCount(); ++i)
+            Annotations::applyRedactions(m_qpdf, i);
         setModified(true);
         reloadFromQpdf();
     } catch (const std::exception& e) { QMessageBox::critical(this, "Redact Error", e.what()); }
@@ -585,10 +605,12 @@ void MainWindow::onAnnotation(const QVariantMap& payload) {
         const QString type = payload["type"].toString();
         int pg = payload["page"].toInt();
 
-        if (type == "highlight")
-            Annotations::addHighlight(m_qpdf, pg,
-                payload["x0"].toDouble(), payload["y0"].toDouble(),
-                payload["x1"].toDouble(), payload["y1"].toDouble());
+        if (type == "highlight") {
+            double x0 = payload["x0"].toDouble(), y0 = payload["y0"].toDouble();
+            double x1 = payload["x1"].toDouble(), y1 = payload["y1"].toDouble();
+            Annotations::Quad q{ x0,y0, x1,y0, x1,y1, x0,y1 };
+            Annotations::addHighlight(m_qpdf, pg, { q });
+        }
         else if (type == "note")
             Annotations::addTextNote(m_qpdf, pg,
                 payload["x"].toDouble(), payload["y"].toDouble(),
