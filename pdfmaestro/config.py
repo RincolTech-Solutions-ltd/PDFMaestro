@@ -13,9 +13,19 @@ def get_settings() -> QSettings:
 
 # ── Recent files ──────────────────────────────────────────────────────────────
 
+def _coerce_list(val) -> list[str]:
+    # QSettings on Linux returns a bare str (not a list) when only one item
+    # was stored. Normalise to list[str] unconditionally.
+    if val is None:
+        return []
+    if isinstance(val, str):
+        return [val] if val else []
+    return list(val)
+
+
 def add_recent(path: str) -> None:
     s = get_settings()
-    files: list[str] = s.value("recent_files", []) or []
+    files = _coerce_list(s.value("recent_files", []))
     if path in files:
         files.remove(path)
     files.insert(0, path)
@@ -23,8 +33,7 @@ def add_recent(path: str) -> None:
 
 
 def get_recent() -> list[str]:
-    s = get_settings()
-    return s.value("recent_files", []) or []
+    return _coerce_list(get_settings().value("recent_files", []))
 
 
 def clear_recent() -> None:
