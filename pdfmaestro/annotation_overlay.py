@@ -114,61 +114,65 @@ class AnnotationOverlay(QWidget):
     # ── Mouse events ─────────────────────────────────────────────────────────
 
     def mousePressEvent(self, event):
-        if self._tool == TOOL_POINTER or not self._page_rect.contains(event.position()):
-            event.ignore()
-            return
-        pos = event.position()
-
-        if self._tool in (TOOL_HIGHLIGHT, TOOL_REDACT):
-            self._drag_start = pos
-            self._drag_cur   = pos
-
-        elif self._tool == TOOL_INK:
-            x, y = self._to_pdf(pos)
-            self._ink_current = [(x, y)]
-
-        elif self._tool == TOOL_NOTE:
-            self._commit_note(pos)
-
-        elif self._tool == TOOL_STAMP:
-            self._commit_stamp(pos)
-
-        self.update()
+        try:
+            if self._tool == TOOL_POINTER or not self._page_rect.contains(event.position()):
+                event.ignore()
+                return
+            pos = event.position()
+            if self._tool in (TOOL_HIGHLIGHT, TOOL_REDACT):
+                self._drag_start = pos
+                self._drag_cur   = pos
+            elif self._tool == TOOL_INK:
+                x, y = self._to_pdf(pos)
+                self._ink_current = [(x, y)]
+            elif self._tool == TOOL_NOTE:
+                self._commit_note(pos)
+            elif self._tool == TOOL_STAMP:
+                self._commit_stamp(pos)
+            self.update()
+        except Exception:
+            import traceback; traceback.print_exc()
 
     def mouseMoveEvent(self, event):
-        pos = event.position()
-        if self._tool in (TOOL_HIGHLIGHT, TOOL_REDACT) and self._drag_start:
-            self._drag_cur = pos
-            self.update()
-        elif self._tool == TOOL_INK and self._ink_current:
-            x, y = self._to_pdf(pos)
-            self._ink_current.append((x, y))
-            self.update()
+        try:
+            pos = event.position()
+            if self._tool in (TOOL_HIGHLIGHT, TOOL_REDACT) and self._drag_start:
+                self._drag_cur = pos
+                self.update()
+            elif self._tool == TOOL_INK and self._ink_current:
+                x, y = self._to_pdf(pos)
+                self._ink_current.append((x, y))
+                self.update()
+        except Exception:
+            import traceback; traceback.print_exc()
 
     def mouseReleaseEvent(self, event):
-        pos = event.position()
-
-        if self._tool == TOOL_HIGHLIGHT and self._drag_start:
-            self._commit_highlight(self._drag_start, pos)
-            self._reset_draw_state()
-            self.update()
-
-        elif self._tool == TOOL_REDACT and self._drag_start:
-            self._commit_redact(self._drag_start, pos)
-            self._reset_draw_state()
-            self.update()
-
-        elif self._tool == TOOL_INK:
-            if len(self._ink_current) >= 2:
-                self._ink_strokes.append(list(self._ink_current))
-            self._ink_current = []
-            self.update()
+        try:
+            pos = event.position()
+            if self._tool == TOOL_HIGHLIGHT and self._drag_start:
+                self._commit_highlight(self._drag_start, pos)
+                self._reset_draw_state()
+                self.update()
+            elif self._tool == TOOL_REDACT and self._drag_start:
+                self._commit_redact(self._drag_start, pos)
+                self._reset_draw_state()
+                self.update()
+            elif self._tool == TOOL_INK:
+                if len(self._ink_current) >= 2:
+                    self._ink_strokes.append(list(self._ink_current))
+                self._ink_current = []
+                self.update()
+        except Exception:
+            import traceback; traceback.print_exc()
 
     def mouseDoubleClickEvent(self, event):
-        if self._tool == TOOL_INK and self._ink_strokes:
-            self._commit_ink()
-            self._reset_draw_state()
-            self.update()
+        try:
+            if self._tool == TOOL_INK and self._ink_strokes:
+                self._commit_ink()
+                self._reset_draw_state()
+                self.update()
+        except Exception:
+            import traceback; traceback.print_exc()
 
     # ── Commit helpers ────────────────────────────────────────────────────────
 

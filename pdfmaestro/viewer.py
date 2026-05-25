@@ -128,15 +128,18 @@ class PDFViewer(QGraphicsView):
         """Re-render every page at the current zoom level (called after debounce)."""
         if not self._doc:
             return
-        y = PAGE_GAP
-        for i, item in enumerate(self._page_items):
-            page = self._doc[i]
-            pixmap = _page_to_pixmap(page, BASE_DPI * self._zoom)
-            item.setPixmap(pixmap)
-            item.setPos(-pixmap.width() / 2, y)
-            y += pixmap.height() + PAGE_GAP
-        self._refresh_scene_rect()
-        self._push_page_context()
+        try:
+            y = PAGE_GAP
+            for i, item in enumerate(self._page_items):
+                page = self._doc[i]
+                pixmap = _page_to_pixmap(page, BASE_DPI * self._zoom)
+                item.setPixmap(pixmap)
+                item.setPos(-pixmap.width() / 2, y)
+                y += pixmap.height() + PAGE_GAP
+            self._refresh_scene_rect()
+            self._push_page_context()
+        except Exception as exc:
+            import traceback; traceback.print_exc()  # visible in terminal, non-fatal
 
     def _refresh_scene_rect(self):
         r = self._scene.itemsBoundingRect()

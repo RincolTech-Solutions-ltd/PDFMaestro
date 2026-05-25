@@ -673,28 +673,40 @@ class MainWindow(QMainWindow):
     def _on_order_changed(self, order: list[int]):
         if not self._require_pdf():
             return
-        operations.apply_page_order(self._pdf, order)
-        self._page_manager.reset_indices()
-        self._reload_viewer()
+        try:
+            operations.apply_page_order(self._pdf, order)
+            self._page_manager.reset_indices()
+            self._reload_viewer()
+        except Exception as exc:
+            QMessageBox.critical(self, "Reorder failed", str(exc))
 
     def _on_page_deleted(self, original_index: int):
         if not self._require_pdf():
             return
-        operations.delete_pages(self._pdf, {original_index})
-        self._reload_viewer()
+        try:
+            operations.delete_pages(self._pdf, {original_index})
+            self._reload_viewer()
+        except Exception as exc:
+            QMessageBox.critical(self, "Delete page failed", str(exc))
 
     def _on_page_rotated(self, original_index: int, degrees: int):
         if not self._require_pdf():
             return
-        operations.rotate_page(self._pdf, original_index, degrees)
-        self._reload_viewer()
+        try:
+            operations.rotate_page(self._pdf, original_index, degrees)
+            self._reload_viewer()
+        except Exception as exc:
+            QMessageBox.critical(self, "Rotate failed", str(exc))
 
     def _rotate_current(self, degrees: int):
         if not self._require_pdf():
             return
-        idx = self._viewer.current_page
-        operations.rotate_page(self._pdf, idx, degrees)
-        self._reload_viewer()
+        try:
+            idx = self._viewer.current_page
+            operations.rotate_page(self._pdf, idx, degrees)
+            self._reload_viewer()
+        except Exception as exc:
+            QMessageBox.critical(self, "Rotate failed", str(exc))
 
     # ── Merge ─────────────────────────────────────────────────────────────────
 
