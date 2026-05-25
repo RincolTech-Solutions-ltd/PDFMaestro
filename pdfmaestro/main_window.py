@@ -9,6 +9,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QAction, QKeySequence
 
 from pdfmaestro.viewer import PDFViewer
+from pdfmaestro.page_manager import PageManagerWidget
 
 
 class MainWindow(QMainWindow):
@@ -18,6 +19,7 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(1280, 800)
 
         self._viewer = PDFViewer()
+        self._page_manager = PageManagerWidget()
         self._build_ui()
         self._build_menu()
         self._build_toolbar()
@@ -33,7 +35,7 @@ class MainWindow(QMainWindow):
         self._left_panel = QTabWidget()
         self._left_panel.setMinimumWidth(180)
         self._left_panel.setMaximumWidth(300)
-        self._left_panel.addTab(QWidget(), "Pages")
+        self._left_panel.addTab(self._page_manager, "Pages")
         self._left_panel.addTab(QWidget(), "Bookmarks")
         self._left_panel.addTab(QWidget(), "Annotations")
 
@@ -157,6 +159,14 @@ class MainWindow(QMainWindow):
         self._zoom_combo.currentIndexChanged.connect(self._on_zoom_combo_selected)
         self._zoom_combo.lineEdit().returnPressed.connect(self._on_zoom_text_entered)
 
+        # Page manager <-> viewer bidirectional sync
+        # Thumbnail click → jump viewer to that page
+        self._page_manager.page_selected.connect(self._viewer.go_to_page)
+        # Viewer scrolls to new page → highlight that thumbnail
+        self._viewer.page_changed.connect(
+            lambda cur, _total: self._page_manager.set_current_page(cur - 1)
+        )
+
     def _on_document_loaded(self, path: str, count: int):
         name = os.path.basename(path)
         self.setWindowTitle(f"PDFMaestro — {name}")
@@ -165,6 +175,8 @@ class MainWindow(QMainWindow):
         self._page_spin.setValue(1)
         self._page_spin.blockSignals(False)
         self._page_total.setText(f" / {count}")
+        # Load thumbnails in the page manager panel
+        self._page_manager.load_document(path, count)
 
     def _on_page_changed(self, current: int, total: int):
         self._status_page.setText(f"Page {current} of {total}")
