@@ -75,8 +75,10 @@ class _PageListView(QListView):
 # ── Public widget ─────────────────────────────────────────────────────────────
 
 class PageManagerWidget(QWidget):
-    page_selected = Signal(int)   # 0-based page index user clicked
-    order_changed = Signal(list)  # new order as list[int] of original indices
+    page_selected = Signal(int)        # 0-based page index user clicked
+    order_changed = Signal(list)       # new order as list[int] of original indices
+    page_deleted  = Signal(int)        # original page index that was deleted
+    page_rotated  = Signal(int, int)   # (original_index, degrees)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -202,26 +204,27 @@ class PageManagerWidget(QWidget):
         menu.addAction("Insert Blank Page Before", lambda: None)  # Phase 4
         menu.exec(self._list.viewport().mapToGlobal(pos))
 
+    def reset_indices(self):
+        """After any pikepdf mutation, renumber UserRole to match current row order."""
+        for r in range(self._model.rowCount()):
+            self._model.item(r).setData(r, Qt.UserRole)
+            self._model.item(r).setText(f"Page {r + 1}")
+
     def _rotate(self, row: int, degrees: int):
         item = self._model.item(row)
         if not item:
             return
+        orig_idx = item.data(Qt.UserRole)
         rotation = (item.data(Qt.UserRole + 1) or 0) + degrees
         item.setData(rotation % 360, Qt.UserRole + 1)
-        # Re-render this thumbnail at the new rotation (Phase 4 will apply to PDF)
-        orig_idx = item.data(Qt.UserRole)
-        worker = _ThumbWorker(self._doc_path, orig_idx, row)
-        worker.signals.done.connect(self._on_thumb_ready)
-        self._pool.start(worker)
+        self.page_rotated.emit(orig_idx, degrees)
 
     def _delete(self, row: int):
         if self._model.rowCount() <= 1:
             return
+        orig_idx = self._model.item(row).data(Qt.UserRole)
         self._model.removeRow(row)
-        # Renumber labels
-        for r in range(self._model.rowCount()):
-            self._model.item(r).setText(f"Page {r + 1}")
-        self.order_changed.emit(self.get_current_order())
+        self.page_deleted.emit(orig_idx)
 
     def _extract(self, row: int):
         # Phase 4 — save single page as new PDF
