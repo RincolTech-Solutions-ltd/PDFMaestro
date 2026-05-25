@@ -64,22 +64,30 @@ PDFMaestro combines the deep document viewing of [Okular](https://okular.kde.org
 ### One-liner (Ubuntu / Debian / Linux Mint)
 
 ```bash
-sudo apt-get install -y python3-pip python3-pyside6.qtwidgets libpoppler-dev && pip install --user pdfmaestro
+bash <(curl -fsSL https://raw.githubusercontent.com/RincolTech-Solutions-ltd/PDFMaestro/main/scripts/install_pdfmaestro.sh)
 ```
 
-### One-liner (Arch Linux)
+This script will:
+1. Install system dependencies (`git`, `python3`, `python3-pip`, `python3-venv`, `libgl1`)
+2. Clone the repo to `~/PDFMaestro`
+3. Install the package and all Python dependencies
+4. Create a desktop launcher (shows in your app menu under Office)
+
+### Manual install (any distro)
 
 ```bash
-sudo pacman -S python-pyside6 && pip install --user pdfmaestro
+git clone https://github.com/RincolTech-Solutions-ltd/PDFMaestro.git ~/PDFMaestro
+pip3 install --user --break-system-packages -e ~/PDFMaestro
 ```
 
-### One-liner (Fedora)
+### Python dependencies
 
-```bash
-sudo dnf install -y python3-pyside6 && pip install --user pdfmaestro
 ```
-
-For detailed installation instructions, virtual environment setup, and building from source, see **[docs/INSTALL.md](docs/INSTALL.md)**.
+pypdfium2
+pikepdf
+PySide6
+Pillow
+```
 
 ---
 
@@ -125,19 +133,22 @@ For a full guide see **[docs/USAGE.md](docs/USAGE.md)**.
 
 ```
 pdfmaestro/
-├── __main__.py        entry point
-├── main_window.py     main window, menus, toolbar
-├── viewer.py          PDF rendering (pypdfium2)
-├── page_manager.py    thumbnail panel, drag-and-drop
-├── operations.py      merge, split, crop, rotate
-├── signature.py       type / draw / upload signature dialog
-├── annotation.py      annotation engine + pikepdf save
-├── search.py          full-text search
-└── config.py          persistent settings
+├── __main__.py             entry point
+├── main_window.py          main window, menus, toolbar
+├── viewer.py               PDF rendering (pypdfium2)
+├── page_manager.py         thumbnail panel, drag-and-drop
+├── operations.py           merge, split, crop, rotate, signature overlay
+├── signature.py            type / draw / upload signature dialog
+├── annotations.py          pikepdf annotation writer
+├── annotation_overlay.py   transparent Qt overlay for drawing annotations
+├── search.py               full-text search (pypdfium2)
+├── toc.py                  TOC / bookmark reader
+├── image_utils.py          shared PIL + pikepdf image helpers
+└── config.py               persistent settings, dark theme
 
 data/
 └── icons/
-    └── pdfmaestro.svg  app icon
+    └── pdfmaestro.svg      app icon
 ```
 
 ---
@@ -145,14 +156,14 @@ data/
 ## Development Roadmap
 
 - [x] Phase 1 — Project scaffold, icon, dependency spec
-- [ ] Phase 2 — Core PDF viewer (render, scroll, zoom, keyboard nav)
-- [ ] Phase 3 — Page Manager panel (thumbnail grid, drag-to-reorder)
-- [ ] Phase 4 — Merge / Split / Crop operations
-- [ ] Phase 5 — Signature dialog (Qt port)
-- [ ] Phase 6 — Full annotation engine
-- [ ] Phase 7 — Text search
-- [ ] Phase 8 — TOC / Bookmarks panel
-- [ ] Phase 9 — Polish (dark mode, settings, welcome screen, OCR stub)
+- [x] Phase 2 — Core PDF viewer (render, scroll, zoom, keyboard nav)
+- [x] Phase 3 — Page Manager panel (thumbnail grid, drag-to-reorder)
+- [x] Phase 4 — Merge / Split / Crop operations
+- [x] Phase 5 — Signature dialog (type / draw / upload, pikepdf SMask transparency)
+- [x] Phase 6 — Full annotation engine (highlight, sticky note, ink, stamp, redact)
+- [x] Phase 7 — Full-text search with match highlights
+- [x] Phase 8 — TOC / Bookmarks panel (clickable tree, page sync)
+- [x] Phase 9 — Polish (dark mode, settings dialog, welcome screen, presentation mode, OCR stub)
 
 ---
 

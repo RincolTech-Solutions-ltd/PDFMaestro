@@ -1,7 +1,9 @@
 import pypdfium2 as pdfium
 from PySide6.QtWidgets import QGraphicsView, QGraphicsScene, QGraphicsPixmapItem
-from PySide6.QtCore import Qt, Signal, QTimer
+from PySide6.QtCore import Qt, Signal, QTimer, QRectF, QPointF
 from PySide6.QtGui import QPainter, QPixmap, QImage, QColor, QWheelEvent, QKeyEvent
+
+from pdfmaestro.annotation_overlay import AnnotationOverlay, TOOL_POINTER
 
 BASE_DPI = 150   # base render resolution
 PAGE_GAP = 16    # vertical gap between pages (px)
@@ -30,9 +32,10 @@ class PageItem(QGraphicsPixmapItem):
 
 
 class PDFViewer(QGraphicsView):
-    page_changed = Signal(int, int)     # (current_1based, total)
-    zoom_changed = Signal(float)        # zoom factor  (1.0 = 100 %)
-    document_loaded = Signal(str, int)  # (path, page_count)
+    page_changed        = Signal(int, int)   # (current_1based, total)
+    zoom_changed        = Signal(float)      # zoom factor (1.0 = 100%)
+    document_loaded     = Signal(str, int)   # (path, page_count)
+    annotation_committed = Signal(dict)      # forwarded from AnnotationOverlay
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -56,6 +59,39 @@ class PDFViewer(QGraphicsView):
         self.setBackgroundBrush(QColor("#1e2530"))
         self.setAlignment(Qt.AlignHCenter | Qt.AlignTop)
         self.setFocusPolicy(Qt.StrongFocus)
+
+        # Annotation overlay — transparent widget on top of the viewport
+        self._overlay = AnnotationOverlay(self.viewport())
+        self._overlay.setGeometry(self.viewport().rect())
+        self._overlay.raise_()
+        self._overlay.annotation_committed.connect(self.annotation_committed)
+
+    # ── Annotation overlay ────────────────────────────────────────────────────
+
+    def set_annotation_tool(self, tool: str):
+        self._overlay.set_tool(tool)
+        # Pointer mode: let events pass through to the QGraphicsView for panning
+        self.setDragMode(
+            QGraphicsView.ScrollHandDrag if tool == TOOL_POINTER
+            else QGraphicsView.NoDrag
+        )
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._overlay.setGeometry(self.viewport().rect())
+        self._push_page_context()
+
+    def _push_page_context(self):
+        if not self._page_items or self._current_page >= len(self._page_items):
+            return
+        item = self._page_items[self._current_page]
+        scene_br = item.sceneBoundingRect()
+        tl = QPointF(self.mapFromScene(scene_br.topLeft()))
+        br = QPointF(self.mapFromScene(scene_br.bottomRight()))
+        h_pt = self._doc[self._current_page].get_height() if self._doc else 792.0
+        self._overlay.set_page_context(
+            self._current_page, QRectF(tl, br), h_pt, self._zoom,
+        )
 
     # ── Document loading ──────────────────────────────────────────────────────
 
@@ -86,6 +122,7 @@ class PDFViewer(QGraphicsView):
             self._page_items.append(item)
             y += pixmap.height() + PAGE_GAP
         self._refresh_scene_rect()
+        self._push_page_context()
 
     def _rerender_at_zoom(self):
         """Re-render every page at the current zoom level (called after debounce)."""
@@ -99,6 +136,7 @@ class PDFViewer(QGraphicsView):
             item.setPos(-pixmap.width() / 2, y)
             y += pixmap.height() + PAGE_GAP
         self._refresh_scene_rect()
+        self._push_page_context()
 
     def _refresh_scene_rect(self):
         r = self._scene.itemsBoundingRect()
@@ -147,6 +185,7 @@ class PDFViewer(QGraphicsView):
         self._current_page = index
         self.centerOn(self._page_items[index])
         self.page_changed.emit(index + 1, len(self._doc))
+        self._push_page_context()
 
     def next_page(self):
         self.go_to_page(self._current_page + 1)
@@ -174,6 +213,7 @@ class PDFViewer(QGraphicsView):
         if closest != self._current_page:
             self._current_page = closest
             self.page_changed.emit(closest + 1, len(self._doc))
+            self._push_page_context()
 
     # ── Events ────────────────────────────────────────────────────────────────
 

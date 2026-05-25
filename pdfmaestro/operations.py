@@ -63,10 +63,10 @@ def crop_page(
     page = pdf.pages[page_index]
     l, b, r, t = _get_media_box(page)
     page["/CropBox"] = pikepdf.Array([
-        pikepdf.Decimal(str(round(l + margin_left, 3))),
-        pikepdf.Decimal(str(round(b + margin_bottom, 3))),
-        pikepdf.Decimal(str(round(r - margin_right, 3))),
-        pikepdf.Decimal(str(round(t - margin_top, 3))),
+        round(l + margin_left,  3),
+        round(b + margin_bottom, 3),
+        round(r - margin_right, 3),
+        round(t - margin_top,   3),
     ])
 
 
@@ -137,6 +137,88 @@ def split_each_page(pdf: pikepdf.Pdf, out_dir: str, base_name: str) -> list[str]
         out_dir,
         base_name,
     )
+
+
+# ── Signature overlay ────────────────────────────────────────────────────────
+
+def overlay_signature_on_page(
+    pdf: pikepdf.Pdf,
+    page_idx: int,
+    sig_pdf_path: str,
+    position: str = "bottom-right",
+    margin: float = 20.0,
+) -> None:
+    """
+    Overlay a single-page signature PDF onto page_idx as a Form XObject.
+    position: "top-left" | "top-right" | "bottom-left" | "bottom-right" | "center"
+    margin: gap in PDF points from the page edge.
+    """
+    with pikepdf.Pdf.open(sig_pdf_path) as sig_pdf:
+        sig_page = sig_pdf.pages[0]
+
+        mb = sig_page.get("/MediaBox", pikepdf.Array([0, 0, 200, 80]))
+        sig_w = float(mb[2])
+        sig_h = float(mb[3])
+
+        target = pdf.pages[page_idx]
+        tmb = target.get("/MediaBox", pikepdf.Array([0, 0, 595, 842]))
+        page_w = float(tmb[2])
+        page_h = float(tmb[3])
+
+        positions = {
+            "top-left":     (margin, page_h - sig_h - margin),
+            "top-right":    (page_w - sig_w - margin, page_h - sig_h - margin),
+            "bottom-left":  (margin, margin),
+            "bottom-right": (page_w - sig_w - margin, margin),
+            "center":       ((page_w - sig_w) / 2.0, (page_h - sig_h) / 2.0),
+        }
+        x, y = positions.get(position, positions["bottom-right"])
+
+        # Read sig page content bytes (decoded)
+        contents = sig_page.get("/Contents")
+        if contents is None:
+            return
+        if isinstance(contents, pikepdf.Stream):
+            content_bytes = contents.read_bytes()
+        else:
+            content_bytes = b"\n".join(item.read_bytes() for item in contents)
+
+        # Build Form XObject wrapping the sig page content
+        form = pikepdf.Stream(pdf, content_bytes)
+        form["/Type"]     = pikepdf.Name("/XObject")
+        form["/Subtype"]  = pikepdf.Name("/Form")
+        form["/FormType"] = 1
+        form["/BBox"]     = pikepdf.Array([0, 0, sig_w, sig_h])
+        sig_res = sig_page.get("/Resources")
+        if sig_res is not None:
+            # copy_foreign requires an indirect reference — make it indirect first
+            form["/Resources"] = pdf.copy_foreign(sig_pdf.make_indirect(sig_res))
+        form_ref = pdf.make_indirect(form)
+
+        # Unique name to avoid XObject collisions across calls
+        ns = f"PMS{page_idx:03d}"
+
+        if "/Resources" not in target:
+            target["/Resources"] = pikepdf.Dictionary()
+        tgt_res = target["/Resources"]
+        if "/XObject" not in tgt_res:
+            tgt_res["/XObject"] = pikepdf.Dictionary()
+        tgt_res["/XObject"][f"/{ns}"] = form_ref
+
+        # Overlay: translate to (x, y) then invoke the form
+        overlay = f"\nq 1 0 0 1 {x:.4f} {y:.4f} cm /{ns} Do Q\n".encode()
+
+        # Append overlay to existing content stream(s)
+        existing = target.get("/Contents")
+        if existing is None:
+            target["/Contents"] = pdf.make_stream(overlay)
+        elif isinstance(existing, pikepdf.Stream):
+            combined = existing.read_bytes() + overlay
+            target["/Contents"] = pdf.make_stream(combined)
+        else:
+            # Array of streams — read all and combine into one
+            combined = b"\n".join(item.read_bytes() for item in existing) + overlay
+            target["/Contents"] = pdf.make_stream(combined)
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────

@@ -3,6 +3,7 @@ from PySide6.QtWidgets import QApplication
 from PySide6.QtGui import QIcon
 from pdfmaestro.main_window import MainWindow
 from pdfmaestro import __app_name__, __org_name__
+from pdfmaestro import config as cfg
 
 import os
 
@@ -14,6 +15,8 @@ def main():
 
     icon_path = os.path.join(os.path.dirname(__file__), "..", "data", "icons", "pdfmaestro.svg")
     app.setWindowIcon(QIcon(os.path.abspath(icon_path)))
+
+    cfg.apply_theme(app, cfg.is_dark())
 
     window = MainWindow()
     window.show()
