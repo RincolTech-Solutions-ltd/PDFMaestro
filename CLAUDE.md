@@ -12,6 +12,22 @@ Active branch: `feature/cpp-rewrite`. `main` still holds the old Python code.
 
 ---
 
+## Running
+
+```bash
+pdfmaestro              # open with no file
+pdfmaestro file.pdf     # open a specific PDF
+```
+
+The binary lives at `/usr/local/bin/pdfmaestro` after install — no path setup needed. Just type `pdfmaestro` in any terminal.
+
+Convenience script (also handles "not installed" gracefully):
+```bash
+bash "/media/genius/New Volume/Engineering/Programming/Scripts/run_pdfmaestro.sh" [file.pdf]
+```
+
+---
+
 ## Build & Install
 
 ```bash
@@ -23,9 +39,6 @@ mkdir -p build
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr/local
 cmake --build build --parallel $(nproc)
 sudo cmake --install build
-
-# Run
-pdfmaestro [file.pdf]
 ```
 
 Build dependencies: `cmake ninja-build pkg-config qt6-base-dev qt6-tools-dev libpoppler-qt6-dev libqpdf-dev`

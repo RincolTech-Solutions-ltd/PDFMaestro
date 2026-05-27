@@ -76,10 +76,16 @@ void rotatePage(QPDF& pdf, int pageIdx, int degrees) {
     obj.replaceKey("/Rotate", QPDFObjectHandle::newInteger((cur + degrees + 360) % 360));
 }
 
+// newReal(double) defaults to decimal_places=0 which truncates to integer.
+// Use 6 decimal places so crop/signature coordinates are preserved exactly.
+static constexpr int kRealPrecision = 6;
+
 static QPDFObjectHandle makeRect(double x0,double y0,double x1,double y1) {
     return QPDFObjectHandle::newArray({
-        QPDFObjectHandle::newReal(x0), QPDFObjectHandle::newReal(y0),
-        QPDFObjectHandle::newReal(x1), QPDFObjectHandle::newReal(y1)
+        QPDFObjectHandle::newReal(x0, kRealPrecision),
+        QPDFObjectHandle::newReal(y0, kRealPrecision),
+        QPDFObjectHandle::newReal(x1, kRealPrecision),
+        QPDFObjectHandle::newReal(y1, kRealPrecision)
     });
 }
 

@@ -72,3 +72,7 @@ install(TARGETS pdfmaestro DESTINATION bin)
 install(FILES data/icons/pdfmaestro.svg
         DESTINATION share/icons/hicolor/scalable/apps
         RENAME pdfmaestro.svg)
+
+# === Unit tests (build with: cmake --build build --target all && ctest) ======
+enable_testing()
+add_subdirectory(tests)

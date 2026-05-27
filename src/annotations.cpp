@@ -4,18 +4,24 @@
 
 namespace Annotations {
 
+// newReal(double) defaults to decimal_places=0 which rounds to integer.
+// Use 6 decimal places so coordinates and colours survive the roundtrip intact.
+static constexpr int kRealPrecision = 6;
+
 static QPDFObjectHandle makeRect(double x0,double y0,double x1,double y1) {
     return QPDFObjectHandle::newArray({
-        QPDFObjectHandle::newReal(x0), QPDFObjectHandle::newReal(y0),
-        QPDFObjectHandle::newReal(x1), QPDFObjectHandle::newReal(y1)
+        QPDFObjectHandle::newReal(x0, kRealPrecision),
+        QPDFObjectHandle::newReal(y0, kRealPrecision),
+        QPDFObjectHandle::newReal(x1, kRealPrecision),
+        QPDFObjectHandle::newReal(y1, kRealPrecision)
     });
 }
 
 static QPDFObjectHandle makeColor(QColor c) {
     return QPDFObjectHandle::newArray({
-        QPDFObjectHandle::newReal(c.redF()),
-        QPDFObjectHandle::newReal(c.greenF()),
-        QPDFObjectHandle::newReal(c.blueF())
+        QPDFObjectHandle::newReal(c.redF(),   kRealPrecision),
+        QPDFObjectHandle::newReal(c.greenF(), kRealPrecision),
+        QPDFObjectHandle::newReal(c.blueF(),  kRealPrecision)
     });
 }
 
@@ -51,7 +57,7 @@ void addHighlight(QPDF& pdf, int pageIdx,
     annot.replaceKey("/Rect",       makeRect(x0,y0,x1,y1));
     annot.replaceKey("/QuadPoints", qpArr);
     annot.replaceKey("/C",          makeColor(color));
-    annot.replaceKey("/CA",         QPDFObjectHandle::newReal(opacity));
+    annot.replaceKey("/CA",         QPDFObjectHandle::newReal(opacity, kRealPrecision));
     annot.replaceKey("/F",          QPDFObjectHandle::newInteger(4));
     appendAnnot(pdf, pageIdx, annot);
 }
@@ -89,7 +95,7 @@ void addInk(QPDF& pdf, int pageIdx,
     }
 
     auto bs = QPDFObjectHandle::newDictionary();
-    bs.replaceKey("/W", QPDFObjectHandle::newReal(width));
+    bs.replaceKey("/W", QPDFObjectHandle::newReal(width, kRealPrecision));
 
     auto annot = QPDFObjectHandle::newDictionary();
     annot.replaceKey("/Type",    QPDFObjectHandle::newName("/Annot"));
