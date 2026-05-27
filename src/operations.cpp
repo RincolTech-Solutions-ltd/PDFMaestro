@@ -5,6 +5,7 @@
 #include <qpdf/QUtil.hh>
 #include <QFile>
 #include <QBuffer>
+#include <QByteArray>
 #include <cmath>
 #include <memory>
 #include <sstream>
@@ -275,31 +276,76 @@ void overlaySignatureOnPage(QPDF& pdf, int pageIdx,
                        QPDFObjectHandle::newStream(&pdf, existingData));
 }
 
+// ── Port of pdfarranger image_utils.rgba_pil_to_pdf ───────────────────────────
+// FlateDecode-compress a QByteArray for use as a PDF stream.
+// qCompress() prepends a 4-byte big-endian uncompressed-size header that PDF
+// does not understand — skip those first 4 bytes to get a plain zlib stream.
+static std::string flateDecode(const QByteArray& data) {
+    QByteArray compressed = qCompress(data, 6);
+    // Bytes 0-3 = Qt's uncompressed-length header; bytes 4+ = valid zlib stream
+    return std::string(compressed.constData() + 4,
+                       static_cast<size_t>(compressed.size() - 4));
+}
+
+// Exact port of rgba_pil_to_pdf: RGB stream + SMask (alpha) stream → true transparency.
+// No white box — signature ink only.
 void overlayImageOnPage(QPDF& pdf, int pageIdx, const QImage& img,
                         double sigW, double sigH, double x, double y)
 {
     auto ps = pages(pdf);
     if (pageIdx < 0 || pageIdx >= (int)ps.size()) return;
 
-    // Encode image as JPEG into a QByteArray
-    QByteArray imgData;
-    QBuffer buf(&imgData);
-    buf.open(QIODevice::WriteOnly);
-    img.save(&buf, "JPEG", 90);
-    buf.close();
-    if (imgData.isEmpty()) return;
+    // Work in RGBA8888 — preserves every alpha bit from remove_bg / autocrop
+    QImage rgba = img.convertToFormat(QImage::Format_RGBA8888);
+    int w = rgba.width(), h = rgba.height();
+    if (w <= 0 || h <= 0) return;
 
-    // Build Image XObject
-    auto imgStream = QPDFObjectHandle::newStream(&pdf,
-        std::string(imgData.constData(), imgData.size()));
-    auto d = imgStream.getDict();
-    d.replaceKey("/Type",             QPDFObjectHandle::newName("/XObject"));
-    d.replaceKey("/Subtype",          QPDFObjectHandle::newName("/Image"));
-    d.replaceKey("/Width",            QPDFObjectHandle::newInteger(img.width()));
-    d.replaceKey("/Height",           QPDFObjectHandle::newInteger(img.height()));
-    d.replaceKey("/ColorSpace",       QPDFObjectHandle::newName("/DeviceRGB"));
-    d.replaceKey("/BitsPerComponent", QPDFObjectHandle::newInteger(8));
-    d.replaceKey("/Filter",           QPDFObjectHandle::newName("/DCTDecode"));
+    // Split channels: interleaved RGBA → separate RGB and A byte arrays
+    QByteArray rgbData, alphaData;
+    rgbData.reserve(w * h * 3);
+    alphaData.reserve(w * h);
+    for (int row = 0; row < h; ++row) {
+        const uchar* line = rgba.constScanLine(row);
+        for (int col = 0; col < w; ++col) {
+            const int off = col * 4;
+            rgbData.append(static_cast<char>(line[off + 0]));   // R
+            rgbData.append(static_cast<char>(line[off + 1]));   // G
+            rgbData.append(static_cast<char>(line[off + 2]));   // B
+            alphaData.append(static_cast<char>(line[off + 3])); // A
+        }
+    }
+
+    // Compress both streams (FlateDecode = zlib, same as pikepdf's FlateDecode)
+    std::string rgbComp   = flateDecode(rgbData);
+    std::string alphaComp = flateDecode(alphaData);
+
+    // Build SMask (soft-mask) stream — grayscale alpha channel
+    auto smask = QPDFObjectHandle::newStream(&pdf, alphaComp);
+    {
+        auto sd = smask.getDict();
+        sd.replaceKey("/Type",             QPDFObjectHandle::newName("/XObject"));
+        sd.replaceKey("/Subtype",          QPDFObjectHandle::newName("/Image"));
+        sd.replaceKey("/Width",            QPDFObjectHandle::newInteger(w));
+        sd.replaceKey("/Height",           QPDFObjectHandle::newInteger(h));
+        sd.replaceKey("/ColorSpace",       QPDFObjectHandle::newName("/DeviceGray"));
+        sd.replaceKey("/BitsPerComponent", QPDFObjectHandle::newInteger(8));
+        sd.replaceKey("/Filter",           QPDFObjectHandle::newName("/FlateDecode"));
+    }
+    auto smaskRef = pdf.makeIndirectObject(smask);
+
+    // Build Image XObject — RGB with /SMask reference for transparency
+    auto imgStream = QPDFObjectHandle::newStream(&pdf, rgbComp);
+    {
+        auto d = imgStream.getDict();
+        d.replaceKey("/Type",             QPDFObjectHandle::newName("/XObject"));
+        d.replaceKey("/Subtype",          QPDFObjectHandle::newName("/Image"));
+        d.replaceKey("/Width",            QPDFObjectHandle::newInteger(w));
+        d.replaceKey("/Height",           QPDFObjectHandle::newInteger(h));
+        d.replaceKey("/ColorSpace",       QPDFObjectHandle::newName("/DeviceRGB"));
+        d.replaceKey("/BitsPerComponent", QPDFObjectHandle::newInteger(8));
+        d.replaceKey("/Filter",           QPDFObjectHandle::newName("/FlateDecode"));
+        d.replaceKey("/SMask",            smaskRef);   // ← this is the key
+    }
     auto indImg = pdf.makeIndirectObject(imgStream);
 
     static int sigCount = 0;
@@ -324,6 +370,7 @@ void overlayImageOnPage(QPDF& pdf, int pageIdx, const QImage& img,
                        QPDFObjectHandle::newStream(&pdf, existingData));
 }
 
+// Convenience: place at bottom-right with margin
 void overlayImageOnPage(QPDF& pdf, int pageIdx, const QImage& img,
                         double sigW, double sigH, double margin)
 {

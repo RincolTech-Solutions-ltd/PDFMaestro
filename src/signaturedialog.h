@@ -6,6 +6,7 @@
 #include <QLabel>
 #include <QComboBox>
 #include <QSlider>
+#include <QButtonGroup>
 
 class DrawCanvas;
 
@@ -19,11 +20,19 @@ public:
 
 private slots:
     void onAccept();
+    void onFileSelected();
 
 private:
     QImage renderTyped() const;
     QImage renderDrawn() const;
     QImage renderUploaded() const;
+
+    // Ports of pdfarranger image_utils.py — exact same algorithm
+    static QImage removeBg(QImage img, int threshold = 200);
+    static QImage autocropAlpha(QImage img, int margin = 8);
+    static QImage boostContrast(QImage img, double factor = 3.0);
+
+    void refreshVariantThumbnails(const QImage& orig);
 
     QTabWidget* m_tabs;
 
@@ -37,14 +46,17 @@ private:
     DrawCanvas* m_canvas;
     QSlider*    m_brushSize;
 
-    // Upload tab
-    QLabel*     m_uploadPreview;
-    QString     m_uploadPath;
+    // Upload tab — 3 variants exactly like pdfarranger
+    // [0] = Original   [1] = Transparent A (remove_bg 200)   [2] = Transparent B (boost+remove_bg 160)
+    QLabel*       m_varImg[3];
+    QButtonGroup* m_varGroup = nullptr;
+    QImage        m_varImages[3];
+    int           m_selVariant = 1;   // default: Transparent A
 
-    QImage      m_result;
+    QImage m_result;
 };
 
-// Freehand drawing canvas used by the Draw tab
+// ── Freehand drawing canvas ────────────────────────────────────────────────────
 class DrawCanvas : public QWidget {
     Q_OBJECT
 public:
