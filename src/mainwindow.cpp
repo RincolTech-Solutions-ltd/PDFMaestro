@@ -285,6 +285,9 @@ void MainWindow::onOpenRecent() {
 }
 
 void MainWindow::loadFile(const QString& path) {
+    // Discard any pending sigs from a previous document (don't burn them)
+    m_viewer->clearPendingSignatures();
+    m_pendingSig = QImage();
     try {
         m_qpdf.processFile(path.toStdString().c_str());
         m_qpdfLoaded = true;
@@ -360,9 +363,26 @@ void MainWindow::onTocItemActivated(QTreeWidgetItem* item, int) {
     m_viewer->goToPage(pg);
 }
 
+void MainWindow::burnPendingSignatures() {
+    if (!m_qpdfLoaded) return;
+    const auto sigs = m_viewer->takePendingSignatures();
+    if (sigs.isEmpty()) return;
+    try {
+        for (const auto& s : sigs)
+            Operations::overlayImageOnPage(m_qpdf, s.page, s.image,
+                                           s.sigW, s.sigH, s.x, s.y);
+        // Reload viewer so the burned-in sigs render via Poppler
+        reloadFromQpdf();
+    } catch (const std::exception& e) {
+        QMessageBox::critical(this, "Signature Error",
+                              QString("Failed to commit signature: %1").arg(e.what()));
+    }
+}
+
 void MainWindow::onSave() {
     if (m_currentPath.isEmpty()) { onSaveAs(); return; }
     if (!m_qpdfLoaded) return;
+    burnPendingSignatures();   // commit any draggable overlays to QPDF first
     try {
         QPDFWriter w(m_qpdf, m_currentPath.toStdString().c_str());
         w.write();
@@ -377,6 +397,7 @@ void MainWindow::onSaveAs() {
     const QString path = QFileDialog::getSaveFileName(
         this, "Save PDF As", m_currentPath, "PDF files (*.pdf)");
     if (path.isEmpty()) return;
+    burnPendingSignatures();   // commit overlays before writing
     try {
         QPDFWriter w(m_qpdf, path.toStdString().c_str());
         w.write();
@@ -400,7 +421,8 @@ void MainWindow::onClose() {
     m_qpdfLoaded = false;
     m_currentPath.clear();
     m_modified = false;
-    m_viewer->clear();
+    m_pendingSig = QImage();
+    m_viewer->clear();   // also calls clearPendingSignatures()
     m_pageManager->clear();
     m_tocTree->clear();
     m_searchBar->setDocument(nullptr);
@@ -640,14 +662,24 @@ void MainWindow::onAnnotation(const QVariantMap& payload) {
             Annotations::addRedact(m_qpdf, pg,
                 payload["x0"].toDouble(), payload["y0"].toDouble(),
                 payload["x1"].toDouble(), payload["y1"].toDouble());
-        else if (type == "signature" && !m_pendingSig.isNull())
-            Operations::overlayImageOnPage(m_qpdf, pg,
-                m_pendingSig,
-                payload["sigW"].toDouble(), payload["sigH"].toDouble(),
-                payload["x"].toDouble(),    payload["y"].toDouble());
+        else if (type == "signature") {
+            // Don't burn to QPDF yet — add as a moveable scene overlay.
+            // It gets burned when the user explicitly saves.
+            if (!m_pendingSig.isNull()) {
+                m_viewer->addSigOverlay(
+                    m_pendingSig, pg,
+                    payload["x"].toDouble(),    payload["y"].toDouble(),
+                    payload["sigW"].toDouble(), payload["sigH"].toDouble());
+            }
+            m_pendingSig = QImage();
+            statusBar()->showMessage(
+                "Signature placed — drag to reposition, Delete to remove, Save to commit", 4000);
+            setModified(true);
+            return;   // skip reloadFromQpdf — overlay is already visible in scene
+        }
 
         setModified(true);
-        // For annotations we reload the viewer quietly (the visual feedback is fast)
+        // For non-signature annotations reload the viewer
         reloadFromQpdf();
     } catch (const std::exception& e) {
         qWarning() << "Annotation error:" << e.what();

@@ -83,6 +83,7 @@ private:
     void updateRecentMenu();
     void setModified(bool v);
     void pushPageCountToPageManager();
+    void burnPendingSignatures();   // harvest pending sigs → QPDF just before Save
 
     // Core objects
     Config*      m_config;

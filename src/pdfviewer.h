@@ -5,11 +5,32 @@
 #include <QTimer>
 #include <QByteArray>
 #include <QImage>
+#include <QList>
 #include <memory>
 #include <poppler-qt6.h>
 
 class AnnotationOverlay;
 
+// ── Pending signature overlay record ─────────────────────────────────────────
+// Kept in the QGraphicsScene as a draggable item; burned into QPDF on Save only.
+struct SigRecord {
+    QImage  image;
+    int     pageIdx  = 0;
+    double  xPdf     = 0;   // bottom-left x in PDF points (updated before save)
+    double  yPdf     = 0;   // bottom-left y in PDF points (PDF Y-axis = up from bottom)
+    double  sigWPt   = 150;
+    double  sigHPt   = 60;
+    QGraphicsItem* item = nullptr;  // owned by QGraphicsScene
+};
+
+// Returned by takePendingSignatures() for MainWindow to burn into QPDF
+struct SigCoords {
+    QImage  image;
+    int     page;
+    double  x, y, sigW, sigH;  // all in PDF points
+};
+
+// ── PdfViewer ─────────────────────────────────────────────────────────────────
 class PdfViewer : public QGraphicsView {
     Q_OBJECT
 public:
@@ -28,6 +49,18 @@ public:
 
     void setAnnotationTool(const QString& tool);
     void beginSignaturePlacement(const QImage& img);
+
+    // ── Pending signature overlay API ────────────────────────────────────────
+    // Add a moveable signature overlay at the given PDF coordinates.
+    void addSigOverlay(const QImage& img, int pageIdx,
+                       double xPdf, double yPdf, double sigWPt, double sigHPt);
+
+    // Harvest current drag positions → PDF coords, remove all items, return records.
+    // Call this immediately before writing QPDF to disk.
+    QList<SigCoords> takePendingSignatures();
+
+    // Discard all pending sigs without burning (on close / new document).
+    void clearPendingSignatures();
 
 signals:
     void pageChanged(int current, int total);   // 1-based
@@ -62,6 +95,11 @@ private:
     void updateCurrentPageFromScroll();
     QPixmap renderPage(int idx);
 
+    // Pending sig helpers
+    void   refreshSigItems();          // re-render all sig items after zoom/rebuild
+    void   harvestSigPosition(SigRecord& rec);  // read item->pos() → update xPdf/yPdf
+    double getPageHeightPt(int idx) const;
+
     QGraphicsScene*  m_scene;
     QTimer*          m_rerenderTimer;
 
@@ -73,6 +111,8 @@ private:
     double m_zoom        = 1.0;
 
     AnnotationOverlay* m_overlay = nullptr;
+
+    QList<SigRecord>   m_sigRecords;   // pending sigs not yet burned into QPDF
 
     static constexpr double BASE_DPI  = 150.0;
     static constexpr int    PAGE_GAP  = 16;

@@ -5,6 +5,51 @@
 #include <QResizeEvent>
 #include <QScrollBar>
 #include <QDebug>
+#include <QPainter>
+#include <QStyleOptionGraphicsItem>
+
+// ── Moveable signature scene item ─────────────────────────────────────────────
+// Lives in the QGraphicsScene; draggable until the user saves the document.
+class SigSceneItem : public QGraphicsPixmapItem {
+public:
+    enum { Type = QGraphicsItem::UserType + 42 };
+    int type() const override { return Type; }
+
+    explicit SigSceneItem(const QPixmap& pm) : QGraphicsPixmapItem(pm) {
+        setFlag(ItemIsMovable);
+        setFlag(ItemIsSelectable);
+        setFlag(ItemSendsGeometryChanges);
+        setZValue(200);   // always above page content
+        setTransformationMode(Qt::SmoothTransformation);
+    }
+
+protected:
+    void paint(QPainter* p,
+               const QStyleOptionGraphicsItem* /*opt*/,
+               QWidget* w) override
+    {
+        // Draw image normally (skip Qt's built-in selection decoration)
+        QStyleOptionGraphicsItem plain;
+        plain.state = QStyle::State_None;
+        QGraphicsPixmapItem::paint(p, &plain, w);
+
+        // Dashed border — blue when selected, faint grey otherwise
+        QRectF r = boundingRect().adjusted(1, 1, -1, -1);
+        if (isSelected()) {
+            p->setPen(QPen(QColor(60, 120, 255), 2.0, Qt::DashLine));
+            p->setBrush(Qt::NoBrush);
+            p->drawRect(r);
+            p->setFont(QFont("sans-serif", 8));
+            p->setPen(QColor(40, 100, 220));
+            p->drawText(r.bottomLeft() + QPointF(2, 14),
+                        "Drag to reposition  •  Delete to remove");
+        } else {
+            p->setPen(QPen(QColor(120, 160, 255, 140), 1.0, Qt::DashLine));
+            p->setBrush(Qt::NoBrush);
+            p->drawRect(r);
+        }
+    }
+};
 
 PdfViewer::PdfViewer(QWidget* parent)
     : QGraphicsView(parent)
@@ -37,6 +82,7 @@ PdfViewer::PdfViewer(QWidget* parent)
 PdfViewer::~PdfViewer() = default;
 
 void PdfViewer::clear() {
+    clearPendingSignatures();
     m_doc.reset();
     m_scene->clear();
     m_pageItems.clear();
@@ -92,8 +138,14 @@ QPixmap PdfViewer::renderPage(int idx) {
 }
 
 void PdfViewer::buildScene() {
-    m_scene->clear();
+    // Harvest current drag positions before wiping the scene
+    for (auto& rec : m_sigRecords) harvestSigPosition(rec);
+
+    m_scene->clear();   // removes ALL items including old sig items
     m_pageItems.clear();
+    // Nullify sig item pointers — scene deleted them
+    for (auto& rec : m_sigRecords) rec.item = nullptr;
+
     if (!m_doc) return;
 
     int y = PAGE_GAP;
@@ -108,11 +160,15 @@ void PdfViewer::buildScene() {
     auto r = m_scene->itemsBoundingRect();
     setSceneRect(r.adjusted(-20, -PAGE_GAP, 20, PAGE_GAP));
     pushPageContext();
+    refreshSigItems();   // re-add pending sigs at their stored positions
 }
 
 void PdfViewer::rerenderAtZoom() {
     if (!m_doc) return;
     try {
+        // Harvest current drag positions at old zoom before page items move
+        for (auto& rec : m_sigRecords) harvestSigPosition(rec);
+
         int y = PAGE_GAP;
         for (int i = 0; i < (int)m_pageItems.size(); ++i) {
             QPixmap pm = renderPage(i);
@@ -123,6 +179,7 @@ void PdfViewer::rerenderAtZoom() {
         auto r = m_scene->itemsBoundingRect();
         setSceneRect(r.adjusted(-20, -PAGE_GAP, 20, PAGE_GAP));
         pushPageContext();
+        refreshSigItems();   // re-render at new zoom level
     } catch (const std::exception& e) {
         qWarning() << "PdfViewer::rerenderAtZoom:" << e.what();
     }
@@ -229,6 +286,21 @@ void PdfViewer::wheelEvent(QWheelEvent* event) {
 
 void PdfViewer::keyPressEvent(QKeyEvent* event) {
     switch (event->key()) {
+    case Qt::Key_Delete:
+    case Qt::Key_Backspace: {
+        // Remove any selected pending-signature items
+        bool removed = false;
+        for (int i = m_sigRecords.size() - 1; i >= 0; --i) {
+            if (m_sigRecords[i].item && m_sigRecords[i].item->isSelected()) {
+                m_scene->removeItem(m_sigRecords[i].item);
+                delete m_sigRecords[i].item;
+                m_sigRecords.remove(i);
+                removed = true;
+            }
+        }
+        if (!removed) QGraphicsView::keyPressEvent(event);
+        break;
+    }
     case Qt::Key_Right: case Qt::Key_PageDown: nextPage();  break;
     case Qt::Key_Left:  case Qt::Key_PageUp:   prevPage();  break;
     case Qt::Key_Home:                         firstPage(); break;
@@ -260,4 +332,102 @@ void PdfViewer::scrollContentsBy(int dx, int dy) {
     QGraphicsView::scrollContentsBy(dx, dy);
     updateCurrentPageFromScroll();
     pushPageContext();
+}
+
+// ── Pending signature overlay ─────────────────────────────────────────────────
+
+double PdfViewer::getPageHeightPt(int idx) const {
+    if (m_doc && idx >= 0 && idx < m_doc->numPages()) {
+        std::unique_ptr<Poppler::Page> p(m_doc->page(idx));
+        if (p) return p->pageSizeF().height();
+    }
+    return 792.0;  // US Letter fallback
+}
+
+// Read item's current scene position and back-compute PDF bottom-left coords.
+void PdfViewer::harvestSigPosition(SigRecord& rec) {
+    if (!rec.item || rec.pageIdx < 0 || rec.pageIdx >= m_pageItems.size()) return;
+    auto* pageItem = m_pageItems[rec.pageIdx];
+    double pxPerPt = BASE_DPI * m_zoom / 72.0;
+    double ix = pageItem->pos().x();
+    double iy = pageItem->pos().y();
+    QPointF tl = rec.item->pos();   // scene top-left of sig item
+    double pageHPt = getPageHeightPt(rec.pageIdx);
+    rec.xPdf = (tl.x() - ix) / pxPerPt;
+    rec.yPdf = pageHPt - (tl.y() - iy) / pxPerPt - rec.sigHPt;
+}
+
+// Create/recreate sig items in the scene at their current stored PDF positions.
+void PdfViewer::refreshSigItems() {
+    for (auto& rec : m_sigRecords) {
+        // Remove stale item if still in scene
+        if (rec.item) {
+            m_scene->removeItem(rec.item);
+            delete rec.item;
+            rec.item = nullptr;
+        }
+        if (rec.pageIdx < 0 || rec.pageIdx >= m_pageItems.size()) continue;
+
+        double pxPerPt   = BASE_DPI * m_zoom / 72.0;
+        double pageHPt   = getPageHeightPt(rec.pageIdx);
+        auto*  pageItem  = m_pageItems[rec.pageIdx];
+        double ix        = pageItem->pos().x();
+        double iy        = pageItem->pos().y();
+
+        // Scale pixmap to current zoom
+        int sw = qMax(1, qRound(rec.sigWPt * pxPerPt));
+        int sh = qMax(1, qRound(rec.sigHPt * pxPerPt));
+        QPixmap pm = QPixmap::fromImage(
+            rec.image.scaled(sw, sh, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+
+        auto* item = new SigSceneItem(pm);
+
+        // Place: convert PDF bottom-left → scene top-left
+        double sx = ix + rec.xPdf * pxPerPt;
+        double sy = iy + (pageHPt - rec.yPdf - rec.sigHPt) * pxPerPt;
+        item->setPos(sx, sy);
+
+        m_scene->addItem(item);
+        rec.item = item;
+    }
+}
+
+void PdfViewer::addSigOverlay(const QImage& img, int pageIdx,
+                               double xPdf, double yPdf,
+                               double sigWPt, double sigHPt)
+{
+    SigRecord rec;
+    rec.image   = img;
+    rec.pageIdx = pageIdx;
+    rec.xPdf    = xPdf;
+    rec.yPdf    = yPdf;
+    rec.sigWPt  = sigWPt;
+    rec.sigHPt  = sigHPt;
+    rec.item    = nullptr;
+    m_sigRecords.append(rec);
+    refreshSigItems();   // re-renders only the new item (harmless to redo all)
+}
+
+QList<SigCoords> PdfViewer::takePendingSignatures() {
+    // Harvest final drag positions from all items
+    for (auto& rec : m_sigRecords) harvestSigPosition(rec);
+
+    QList<SigCoords> result;
+    for (const auto& rec : m_sigRecords) {
+        result.append({ rec.image, rec.pageIdx,
+                        rec.xPdf, rec.yPdf, rec.sigWPt, rec.sigHPt });
+    }
+    // Remove from scene
+    for (auto& rec : m_sigRecords) {
+        if (rec.item) { m_scene->removeItem(rec.item); delete rec.item; }
+    }
+    m_sigRecords.clear();
+    return result;
+}
+
+void PdfViewer::clearPendingSignatures() {
+    for (auto& rec : m_sigRecords) {
+        if (rec.item) { m_scene->removeItem(rec.item); delete rec.item; }
+    }
+    m_sigRecords.clear();
 }
