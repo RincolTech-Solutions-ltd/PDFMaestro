@@ -240,14 +240,12 @@ void AnnotationOverlay::keyPressEvent(QKeyEvent* event) {
 void AnnotationOverlay::commitSignature(const QPointF& screenPos) {
     if (m_sigImage.isNull()) return;
 
-    double pxPerPt = (m_pageHeightPt > 0 && m_pageRect.height() > 0)
-                     ? m_pageRect.height() / m_pageHeightPt : 1.0;
-    double ghostW  = m_sigWPt * pxPerPt;
-    double ghostH  = m_sigHPt * pxPerPt;
-
-    // Bottom-left corner in screen coords (PDF Y-axis points up, so bottom = larger screen Y)
-    QPointF blScreen(screenPos.x() - ghostW / 2.0, screenPos.y() + ghostH / 2.0);
-    auto [x, y] = toPdf(blScreen);
+    // Convert the ghost CENTER (cursor) to PDF coords, then shift to bottom-left.
+    // Using blScreen directly causes a half-height offset because sigHPt cancels
+    // in the round-trip; the correct anchor is the ghost center mapped to PDF.
+    auto [cx, cy] = toPdf(screenPos);
+    double x = cx - m_sigWPt / 2.0;
+    double y = cy - m_sigHPt / 2.0;
 
     emit annotationCommitted({
         {"type",  "signature"},

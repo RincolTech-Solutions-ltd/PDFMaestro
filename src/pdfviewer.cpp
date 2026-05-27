@@ -274,6 +274,29 @@ void PdfViewer::updateCurrentPageFromScroll() {
     }
 }
 
+// Qt's ScrollHandDrag mode consumes left-click BEFORE forwarding to the scene,
+// so ItemIsMovable never fires for sig items.  We detect a hit on a SigSceneItem
+// here and temporarily switch to NoDrag so the item receives the event and can
+// be dragged freely.  ScrollHandDrag is restored on release.
+void PdfViewer::mousePressEvent(QMouseEvent* event) {
+    if (dragMode() == ScrollHandDrag && event->button() == Qt::LeftButton) {
+        QGraphicsItem* hit = m_scene->itemAt(mapToScene(event->pos()), QTransform());
+        if (hit && hit->type() == SigSceneItem::Type) {
+            setDragMode(NoDrag);
+            m_sigItemDragging = true;
+        }
+    }
+    QGraphicsView::mousePressEvent(event);
+}
+
+void PdfViewer::mouseReleaseEvent(QMouseEvent* event) {
+    QGraphicsView::mouseReleaseEvent(event);
+    if (m_sigItemDragging) {
+        setDragMode(ScrollHandDrag);
+        m_sigItemDragging = false;
+    }
+}
+
 void PdfViewer::wheelEvent(QWheelEvent* event) {
     if (event->modifiers() & Qt::ControlModifier) {
         if (event->angleDelta().y() > 0) zoomIn(); else zoomOut();

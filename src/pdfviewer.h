@@ -83,10 +83,12 @@ public slots:
     void setZoom(double zoom);
 
 protected:
-    void wheelEvent(QWheelEvent* event) override;
-    void keyPressEvent(QKeyEvent* event) override;
-    void resizeEvent(QResizeEvent* event) override;
-    void scrollContentsBy(int dx, int dy) override;
+    void mousePressEvent(QMouseEvent* event)   override;
+    void mouseReleaseEvent(QMouseEvent* event) override;
+    void wheelEvent(QWheelEvent* event)        override;
+    void keyPressEvent(QKeyEvent* event)       override;
+    void resizeEvent(QResizeEvent* event)      override;
+    void scrollContentsBy(int dx, int dy)      override;
 
 private:
     void buildScene();
@@ -113,6 +115,7 @@ private:
     AnnotationOverlay* m_overlay = nullptr;
 
     QList<SigRecord>   m_sigRecords;   // pending sigs not yet burned into QPDF
+    bool               m_sigItemDragging = false;  // true while dragging a sig item
 
     static constexpr double BASE_DPI  = 150.0;
     static constexpr int    PAGE_GAP  = 16;
