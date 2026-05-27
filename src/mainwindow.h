@@ -4,6 +4,7 @@
 #include <QTreeWidget>
 #include <QLabel>
 #include <QActionGroup>
+#include <QImage>
 #include "config.h"
 #include "pdfviewer.h"
 #include "pagemanager.h"
@@ -94,6 +95,9 @@ private:
     bool         m_qpdfLoaded = false;
     QString      m_currentPath;
     bool         m_modified   = false;
+
+    // Pending signature image (held while user is in drag-to-place mode)
+    QImage       m_pendingSig;
 
     // TOC dock
     QDockWidget* m_tocDock;

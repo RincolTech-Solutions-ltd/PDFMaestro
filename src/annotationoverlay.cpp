@@ -1,5 +1,6 @@
 #include "annotationoverlay.h"
 #include <QMouseEvent>
+#include <QKeyEvent>
 #include <QPainter>
 #include <QPen>
 #include <QInputDialog>
@@ -16,11 +17,12 @@ static const QStringList STAMP_NAMES = {
 };
 
 static QCursor cursorForTool(const QString& t) {
-    if (t == "highlight") return QCursor(Qt::IBeamCursor);
-    if (t == "note")      return QCursor(Qt::PointingHandCursor);
-    if (t == "ink")       return QCursor(Qt::CrossCursor);
-    if (t == "stamp")     return QCursor(Qt::PointingHandCursor);
-    if (t == "redact")    return QCursor(Qt::CrossCursor);
+    if (t == "highlight")  return QCursor(Qt::IBeamCursor);
+    if (t == "note")       return QCursor(Qt::PointingHandCursor);
+    if (t == "ink")        return QCursor(Qt::CrossCursor);
+    if (t == "stamp")      return QCursor(Qt::PointingHandCursor);
+    if (t == "redact")     return QCursor(Qt::CrossCursor);
+    if (t == "signature")  return QCursor(Qt::CrossCursor);
     return QCursor(Qt::ArrowCursor);
 }
 
@@ -31,6 +33,16 @@ AnnotationOverlay::AnnotationOverlay(QWidget* parent)
     setAttribute(Qt::WA_NoSystemBackground, true);
     setAttribute(Qt::WA_TranslucentBackground, true);
     setMouseTracking(true);
+}
+
+void AnnotationOverlay::setSignatureImage(const QImage& img, double sigWPt) {
+    m_sigImage = img;
+    m_sigWPt   = sigWPt;
+    m_sigHPt   = (img.height() > 0 && img.width() > 0)
+                 ? sigWPt * double(img.height()) / double(img.width()) : 60.0;
+    setFocusPolicy(Qt::StrongFocus);
+    setFocus();
+    update();
 }
 
 void AnnotationOverlay::setTool(const QString& tool) {
@@ -74,7 +86,9 @@ void AnnotationOverlay::mousePressEvent(QMouseEvent* event) {
             return;
         }
         QPointF pos = event->position();
-        if (m_tool == "highlight" || m_tool == "redact") {
+        if (m_tool == "signature") {
+            commitSignature(pos);
+        } else if (m_tool == "highlight" || m_tool == "redact") {
             m_dragStart = pos;
             m_dragCur   = pos;
             m_dragging  = true;
@@ -93,7 +107,10 @@ void AnnotationOverlay::mousePressEvent(QMouseEvent* event) {
 void AnnotationOverlay::mouseMoveEvent(QMouseEvent* event) {
     try {
         QPointF pos = event->position();
-        if ((m_tool == "highlight" || m_tool == "redact") && m_dragging) {
+        if (m_tool == "signature") {
+            m_sigGhostPos = pos;
+            update();
+        } else if ((m_tool == "highlight" || m_tool == "redact") && m_dragging) {
             m_dragCur = pos;
             update();
         } else if (m_tool == "ink" && !m_inkCurrent.isEmpty()) {
@@ -210,6 +227,42 @@ void AnnotationOverlay::commitRedact(const QPointF& p1, const QPointF& p2) {
     });
 }
 
+void AnnotationOverlay::keyPressEvent(QKeyEvent* event) {
+    if (event->key() == Qt::Key_Escape && m_tool == "signature") {
+        m_sigImage = QImage();
+        setTool("pointer");
+        emit signaturePlacementDone();
+    } else {
+        QWidget::keyPressEvent(event);
+    }
+}
+
+void AnnotationOverlay::commitSignature(const QPointF& screenPos) {
+    if (m_sigImage.isNull()) return;
+
+    double pxPerPt = (m_pageHeightPt > 0 && m_pageRect.height() > 0)
+                     ? m_pageRect.height() / m_pageHeightPt : 1.0;
+    double ghostW  = m_sigWPt * pxPerPt;
+    double ghostH  = m_sigHPt * pxPerPt;
+
+    // Bottom-left corner in screen coords (PDF Y-axis points up, so bottom = larger screen Y)
+    QPointF blScreen(screenPos.x() - ghostW / 2.0, screenPos.y() + ghostH / 2.0);
+    auto [x, y] = toPdf(blScreen);
+
+    emit annotationCommitted({
+        {"type",  "signature"},
+        {"page",  m_pageIdx},
+        {"x",     x},
+        {"y",     y},
+        {"sigW",  m_sigWPt},
+        {"sigH",  m_sigHPt}
+    });
+
+    m_sigImage = QImage();
+    setTool("pointer");
+    emit signaturePlacementDone();
+}
+
 // ── Paint ─────────────────────────────────────────────────────────────────────
 
 static QVector<QPointF> pdfStrokeToScreen(const QVector<QPointF>& stroke,
@@ -228,6 +281,27 @@ void AnnotationOverlay::paintEvent(QPaintEvent*) {
 
     QPainter p(this);
     p.setRenderHint(QPainter::Antialiasing);
+
+    // Signature ghost — follows cursor
+    if (m_tool == "signature" && !m_sigImage.isNull() && m_pageRect.isValid()) {
+        double pxPerPt = (m_pageHeightPt > 0) ? m_pageRect.height() / m_pageHeightPt : 1.0;
+        double ghostW  = m_sigWPt * pxPerPt;
+        double ghostH  = m_sigHPt * pxPerPt;
+        QRectF ghostRect(m_sigGhostPos.x() - ghostW / 2.0,
+                         m_sigGhostPos.y() - ghostH / 2.0,
+                         ghostW, ghostH);
+        p.setOpacity(0.7);
+        p.drawImage(ghostRect, m_sigImage);
+        p.setOpacity(1.0);
+        p.setPen(QPen(QColor(80, 120, 255), 1.5, Qt::DashLine));
+        p.setBrush(Qt::NoBrush);
+        p.drawRect(ghostRect);
+        p.setFont(QFont("sans-serif", 9));
+        p.setPen(QColor(60, 100, 220));
+        p.drawText(ghostRect.bottomLeft() + QPointF(0.0, 18.0),
+                   "Click to place  •  Esc to cancel");
+        return;
+    }
 
     if ((m_tool == "highlight" || m_tool == "redact") && m_dragging) {
         QColor col = (m_tool == "highlight")

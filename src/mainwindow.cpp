@@ -59,6 +59,14 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     connect(m_viewer, &PdfViewer::pageChanged,    this, &MainWindow::onPageChanged);
     connect(m_viewer, &PdfViewer::zoomChanged,    this, &MainWindow::onZoomChanged);
     connect(m_viewer, &PdfViewer::annotationCommitted, this, &MainWindow::onAnnotation);
+    // Restore pointer tool in toolbar when signature placement ends (placed or Esc)
+    connect(m_viewer, &PdfViewer::signatureCancelled, this, [this](){
+        for (auto* a : m_toolGroup->actions()) {
+            if (a->data().toString() == "pointer") { a->setChecked(true); break; }
+        }
+        m_pendingSig = QImage();
+        statusBar()->clearMessage();
+    });
 
     // PageManager signals
     connect(m_pageManager, &PageManager::pageSelected, m_viewer,      &PdfViewer::goToPage);
@@ -527,12 +535,10 @@ void MainWindow::onInsertSignature() {
     QImage sig = dlg.result();
     if (sig.isNull()) return;
 
-    // Place at bottom-right of current page with default size
-    try {
-        Operations::overlayImageOnPage(m_qpdf, m_viewer->currentPage(), sig, 100, 40);
-        setModified(true);
-        reloadFromQpdf();
-    } catch (const std::exception& e) { QMessageBox::critical(this, "Signature Error", e.what()); }
+    // Enter drag-to-place mode: ghost follows cursor, click commits position
+    m_pendingSig = sig;
+    m_viewer->beginSignaturePlacement(sig);
+    statusBar()->showMessage("Move cursor to desired position  •  Click to place  •  Esc to cancel", 0);
 }
 
 void MainWindow::onApplyRedactions() {
@@ -634,6 +640,11 @@ void MainWindow::onAnnotation(const QVariantMap& payload) {
             Annotations::addRedact(m_qpdf, pg,
                 payload["x0"].toDouble(), payload["y0"].toDouble(),
                 payload["x1"].toDouble(), payload["y1"].toDouble());
+        else if (type == "signature" && !m_pendingSig.isNull())
+            Operations::overlayImageOnPage(m_qpdf, pg,
+                m_pendingSig,
+                payload["sigW"].toDouble(), payload["sigH"].toDouble(),
+                payload["x"].toDouble(),    payload["y"].toDouble());
 
         setModified(true);
         // For annotations we reload the viewer quietly (the visual feedback is fast)

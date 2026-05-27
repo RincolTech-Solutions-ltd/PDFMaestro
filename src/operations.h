@@ -40,7 +40,10 @@ void overlaySignatureOnPage(QPDF& pdf, int pageIdx,
                              const QString& position = "bottom-right",
                              double margin = 20.0);
 
-// Overlay a QImage as a signature (embeds as JPEG XObject)
+// Overlay a QImage at explicit PDF coordinates (x,y = bottom-left, in PDF points)
+void overlayImageOnPage(QPDF& pdf, int pageIdx, const QImage& img,
+                        double sigW, double sigH, double x, double y);
+// Convenience: place at bottom-right with margin
 void overlayImageOnPage(QPDF& pdf, int pageIdx, const QImage& img,
                         double sigW, double sigH, double margin = 20.0);
 

@@ -276,7 +276,7 @@ void overlaySignatureOnPage(QPDF& pdf, int pageIdx,
 }
 
 void overlayImageOnPage(QPDF& pdf, int pageIdx, const QImage& img,
-                        double sigW, double sigH, double margin)
+                        double sigW, double sigH, double x, double y)
 {
     auto ps = pages(pdf);
     if (pageIdx < 0 || pageIdx >= (int)ps.size()) return;
@@ -306,11 +306,6 @@ void overlayImageOnPage(QPDF& pdf, int pageIdx, const QImage& img,
     std::string ns = "PMSI" + std::to_string(++sigCount);
 
     auto pageObj = ps[pageIdx].getObjectHandle();
-    auto mb = pageObj.getKey("/MediaBox");
-    double pw = mb.getArrayItem(2).getNumericValue();
-    // Place at bottom-right
-    double x = pw - sigW - margin;
-    double y = margin;
 
     if (!pageObj.hasKey("/Resources"))
         pageObj.replaceKey("/Resources", QPDFObjectHandle::newDictionary());
@@ -327,6 +322,17 @@ void overlayImageOnPage(QPDF& pdf, int pageIdx, const QImage& img,
     existingData += op.str();
     pageObj.replaceKey("/Contents",
                        QPDFObjectHandle::newStream(&pdf, existingData));
+}
+
+void overlayImageOnPage(QPDF& pdf, int pageIdx, const QImage& img,
+                        double sigW, double sigH, double margin)
+{
+    auto ps = pages(pdf);
+    if (pageIdx < 0 || pageIdx >= (int)ps.size()) return;
+    auto pageObj = ps[pageIdx].getObjectHandle();
+    auto mb = pageObj.getKey("/MediaBox");
+    double pw = mb.getArrayItem(2).getNumericValue();
+    overlayImageOnPage(pdf, pageIdx, img, sigW, sigH, pw - sigW - margin, margin);
 }
 
 } // namespace Operations
