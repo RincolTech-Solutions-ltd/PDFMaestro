@@ -431,6 +431,39 @@ void PdfViewer::addSigOverlay(const QImage& img, int pageIdx,
     refreshSigItems();   // re-renders only the new item (harmless to redo all)
 }
 
+void PdfViewer::addSigOverlayAtViewport(const QImage& img, QPointF vpCenter,
+                                         double sigWPt, double sigHPt)
+{
+    if (m_pageItems.isEmpty()) return;
+
+    // mapToScene() uses the live viewport transform — always correct regardless
+    // of scroll position.  (toPdf() in AnnotationOverlay uses a cached rect and
+    // breaks when the page is partly scrolled off-screen.)
+    QPointF sc = mapToScene(vpCenter.toPoint());
+
+    // Find which page scene rect contains the click, or use the closest one.
+    int pageIdx = 0;
+    double best = 1e18;
+    for (int i = 0; i < m_pageItems.size(); ++i) {
+        QRectF r = m_pageItems[i]->sceneBoundingRect();
+        if (r.contains(sc)) { pageIdx = i; best = 0; break; }
+        double d = std::min(std::abs(sc.y() - r.top()), std::abs(sc.y() - r.bottom()));
+        if (d < best) { best = d; pageIdx = i; }
+    }
+
+    double pxPerPt = BASE_DPI * m_zoom / 72.0;
+    double pageHPt = getPageHeightPt(pageIdx);
+    double ix      = m_pageItems[pageIdx]->pos().x();
+    double iy      = m_pageItems[pageIdx]->pos().y();
+
+    // sc is the click centre in scene coords.
+    // Subtract half-dimensions so the sig is centred on the click.
+    double xPdf = (sc.x() - ix) / pxPerPt - sigWPt / 2.0;
+    double yPdf = pageHPt - (sc.y() - iy) / pxPerPt - sigHPt / 2.0;
+
+    addSigOverlay(img, pageIdx, xPdf, yPdf, sigWPt, sigHPt);
+}
+
 QList<SigCoords> PdfViewer::takePendingSignatures() {
     // Harvest final drag positions from all items
     for (auto& rec : m_sigRecords) harvestSigPosition(rec);

@@ -55,6 +55,11 @@ public:
     void addSigOverlay(const QImage& img, int pageIdx,
                        double xPdf, double yPdf, double sigWPt, double sigHPt);
 
+    // Add a moveable signature overlay using raw viewport-pixel click centre.
+    // Converts via mapToScene() — always exact regardless of scroll position.
+    void addSigOverlayAtViewport(const QImage& img, QPointF vpCenter,
+                                 double sigWPt, double sigHPt);
+
     // Harvest current drag positions → PDF coords, remove all items, return records.
     // Call this immediately before writing QPDF to disk.
     QList<SigCoords> takePendingSignatures();

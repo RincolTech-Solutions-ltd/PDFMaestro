@@ -665,10 +665,12 @@ void MainWindow::onAnnotation(const QVariantMap& payload) {
         else if (type == "signature") {
             // Don't burn to QPDF yet — add as a moveable scene overlay.
             // It gets burned when the user explicitly saves.
+            // Use raw viewport coordinates (vpX/vpY) so PdfViewer::addSigOverlayAtViewport
+            // can call mapToScene() for exact placement regardless of scroll position.
             if (!m_pendingSig.isNull()) {
-                m_viewer->addSigOverlay(
-                    m_pendingSig, pg,
-                    payload["x"].toDouble(),    payload["y"].toDouble(),
+                m_viewer->addSigOverlayAtViewport(
+                    m_pendingSig,
+                    QPointF(payload["vpX"].toDouble(), payload["vpY"].toDouble()),
                     payload["sigW"].toDouble(), payload["sigH"].toDouble());
             }
             m_pendingSig = QImage();
