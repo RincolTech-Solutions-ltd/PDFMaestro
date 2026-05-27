@@ -27,6 +27,8 @@ PdfViewer::PdfViewer(QWidget* parent)
     m_overlay->raise();
     connect(m_overlay, &AnnotationOverlay::annotationCommitted,
             this,      &PdfViewer::annotationCommitted);
+    connect(m_overlay, &AnnotationOverlay::signatureCancelled,
+            this,      &PdfViewer::signatureCancelled);
 }
 
 PdfViewer::~PdfViewer() = default;
@@ -143,6 +145,11 @@ void PdfViewer::pushPageContext() {
 void PdfViewer::setAnnotationTool(const QString& tool) {
     m_overlay->setTool(tool);
     setDragMode(tool == "pointer" ? ScrollHandDrag : NoDrag);
+}
+
+void PdfViewer::beginSignaturePlacement(const QImage& img) {
+    m_overlay->setSignatureImage(img);
+    setAnnotationTool("signature");
 }
 
 void PdfViewer::goToPage(int index) {

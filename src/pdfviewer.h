@@ -26,12 +26,14 @@ public:
     void clear();
 
     void setAnnotationTool(const QString& tool);
+    void beginSignaturePlacement(const QImage& img);
 
 signals:
     void pageChanged(int current, int total);   // 1-based
     void zoomChanged(double zoom);
     void documentLoaded(const QString& path, int count);
     void annotationCommitted(const QVariantMap& payload);
+    void signatureCancelled();
 
 public slots:
     void goToPage(int index);   // 0-based

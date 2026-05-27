@@ -282,12 +282,12 @@ void overlaySignatureOnPage(QPDF& pdf, int pageIdx,
 }
 
 void overlayImageOnPage(QPDF& pdf, int pageIdx, const QImage& img,
-                        double sigW, double sigH, double margin)
+                        double sigW, double sigH, double x, double y)
 {
     auto ps = pages(pdf);
     if (pageIdx < 0 || pageIdx >= (int)ps.size()) return;
 
-    // Encode image as JPEG into a QByteArray
+    // Encode image as JPEG
     QByteArray imgData;
     QBuffer buf(&imgData);
     buf.open(QIODevice::WriteOnly);
@@ -312,12 +312,6 @@ void overlayImageOnPage(QPDF& pdf, int pageIdx, const QImage& img,
     std::string ns = "PMSI" + std::to_string(++sigCount);
 
     auto pageObj = ps[pageIdx].getObjectHandle();
-    auto mb = pageObj.getKey("/MediaBox");
-    double pw = mb.getArrayItem(2).getNumericValue();
-    // Place at bottom-right
-    double x = pw - sigW - margin;
-    double y = margin;
-
     if (!pageObj.hasKey("/Resources"))
         pageObj.replaceKey("/Resources", QPDFObjectHandle::newDictionary());
     auto res = pageObj.getKey("/Resources");
@@ -325,14 +319,28 @@ void overlayImageOnPage(QPDF& pdf, int pageIdx, const QImage& img,
         res.replaceKey("/XObject", QPDFObjectHandle::newDictionary());
     res.getKey("/XObject").replaceKey("/" + ns, indImg);
 
+    // PDF cm operator: [sigW 0 0 sigH x y] cm /ns Do
     std::ostringstream op;
-    op << "\nq " << sigW << " 0 0 " << sigH << " " << x << " " << y
-       << " cm /" << ns << " Do Q\n";
+    op << "\nq " << sigW << " 0 0 " << sigH << " "
+       << x << " " << y << " cm /" << ns << " Do Q\n";
 
     std::string existingData = streamToStr(pageObj.getKey("/Contents"));
     existingData += op.str();
     pageObj.replaceKey("/Contents",
                        QPDFObjectHandle::newStream(&pdf, existingData));
+}
+
+void overlayImageOnPage(QPDF& pdf, int pageIdx, const QImage& img,
+                        double sigW, double sigH, double margin)
+{
+    auto ps = pages(pdf);
+    if (pageIdx < 0 || pageIdx >= (int)ps.size()) return;
+    auto mb = ps[pageIdx].getObjectHandle().getKey("/MediaBox");
+    double pw = mb.getArrayItem(2).getNumericValue();
+    // Bottom-right placement
+    double x = pw - sigW - margin;
+    double y = margin;
+    overlayImageOnPage(pdf, pageIdx, img, sigW, sigH, x, y);
 }
 
 } // namespace Operations

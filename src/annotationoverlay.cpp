@@ -1,5 +1,6 @@
 #include "annotationoverlay.h"
 #include <QMouseEvent>
+#include <QKeyEvent>
 #include <QPainter>
 #include <QPen>
 #include <QInputDialog>
@@ -16,11 +17,12 @@ static const QStringList STAMP_NAMES = {
 };
 
 static QCursor cursorForTool(const QString& t) {
-    if (t == "highlight") return QCursor(Qt::IBeamCursor);
-    if (t == "note")      return QCursor(Qt::PointingHandCursor);
-    if (t == "ink")       return QCursor(Qt::CrossCursor);
-    if (t == "stamp")     return QCursor(Qt::PointingHandCursor);
-    if (t == "redact")    return QCursor(Qt::CrossCursor);
+    if (t == "highlight")  return QCursor(Qt::IBeamCursor);
+    if (t == "note")       return QCursor(Qt::PointingHandCursor);
+    if (t == "ink")        return QCursor(Qt::CrossCursor);
+    if (t == "stamp")      return QCursor(Qt::PointingHandCursor);
+    if (t == "redact")     return QCursor(Qt::CrossCursor);
+    if (t == "signature")  return QCursor(Qt::SizeAllCursor);
     return QCursor(Qt::ArrowCursor);
 }
 
@@ -31,6 +33,7 @@ AnnotationOverlay::AnnotationOverlay(QWidget* parent)
     setAttribute(Qt::WA_NoSystemBackground, true);
     setAttribute(Qt::WA_TranslucentBackground, true);
     setMouseTracking(true);
+    setFocusPolicy(Qt::StrongFocus);
 }
 
 void AnnotationOverlay::setTool(const QString& tool) {
@@ -61,6 +64,15 @@ QPair<double,double> AnnotationOverlay::toPdf(const QPointF& pt) const {
     return { relX * pageWidthPt(), (1.0 - relY) * m_pageHeightPt };
 }
 
+void AnnotationOverlay::setSignatureImage(const QImage& img, double sigW) {
+    m_sigImage = img;
+    m_sigW = sigW;
+    if (!img.isNull() && img.width() > 0)
+        m_sigH = sigW * static_cast<double>(img.height()) / img.width();
+    else
+        m_sigH = sigW * 0.4; // fallback aspect
+}
+
 void AnnotationOverlay::resetDrawState() {
     m_dragging = false;
     m_inkStrokes.clear();
@@ -85,6 +97,8 @@ void AnnotationOverlay::mousePressEvent(QMouseEvent* event) {
             commitNote(pos);
         } else if (m_tool == "stamp") {
             commitStamp(pos);
+        } else if (m_tool == "signature") {
+            commitSignature(pos);
         }
         update();
     } catch (const std::exception& e) { qWarning() << e.what(); }
@@ -99,6 +113,9 @@ void AnnotationOverlay::mouseMoveEvent(QMouseEvent* event) {
         } else if (m_tool == "ink" && !m_inkCurrent.isEmpty()) {
             auto [px, py] = toPdf(pos);
             m_inkCurrent.append(QPointF(px, py));
+            update();
+        } else if (m_tool == "signature") {
+            m_sigGhostPos = pos;
             update();
         }
     } catch (const std::exception& e) { qWarning() << e.what(); }
@@ -122,6 +139,15 @@ void AnnotationOverlay::mouseReleaseEvent(QMouseEvent* event) {
             update();
         }
     } catch (const std::exception& e) { qWarning() << e.what(); }
+}
+
+void AnnotationOverlay::keyPressEvent(QKeyEvent* event) {
+    if (m_tool == "signature" && event->key() == Qt::Key_Escape) {
+        m_sigImage = QImage();
+        setTool("pointer");
+        emit signatureCancelled();
+    }
+    QWidget::keyPressEvent(event);
 }
 
 void AnnotationOverlay::mouseDoubleClickEvent(QMouseEvent*) {
@@ -199,6 +225,32 @@ void AnnotationOverlay::commitStamp(const QPointF& pos) {
     });
 }
 
+void AnnotationOverlay::commitSignature(const QPointF& screenPos) {
+    if (m_sigImage.isNull()) return;
+    if (!m_pageRect.contains(screenPos)) return;
+
+    // Ghost is centered on cursor. The bottom-left in PDF space is what
+    // overlayImageOnPage expects (x = left edge, y = bottom edge).
+    double pxPerPt = (m_pageRect.width() > 0 && pageWidthPt() > 0)
+                     ? m_pageRect.width() / pageWidthPt() : 1.0;
+    double ghostW  = m_sigW * pxPerPt;
+    double ghostH  = m_sigH * pxPerPt;
+
+    // Bottom-left screen position of the centered ghost
+    QPointF screenBL(screenPos.x() - ghostW / 2.0,
+                     screenPos.y() + ghostH / 2.0);
+
+    auto [pdfX, pdfY] = toPdf(screenBL);
+    emit annotationCommitted({
+        {"type",  "signature"},
+        {"page",  m_pageIdx},
+        {"x",     pdfX},
+        {"y",     pdfY},
+        {"sigW",  m_sigW},
+        {"sigH",  m_sigH}
+    });
+}
+
 void AnnotationOverlay::commitRedact(const QPointF& p1, const QPointF& p2) {
     auto [x0,y0] = toPdf(QPointF(std::min(p1.x(),p2.x()), std::min(p1.y(),p2.y())));
     auto [x1,y1] = toPdf(QPointF(std::max(p1.x(),p2.x()), std::max(p1.y(),p2.y())));
@@ -225,6 +277,38 @@ static QVector<QPointF> pdfStrokeToScreen(const QVector<QPointF>& stroke,
 
 void AnnotationOverlay::paintEvent(QPaintEvent*) {
     if (m_tool == "pointer") return;
+
+    // ── Signature ghost ───────────────────────────────────────────────────────
+    if (m_tool == "signature" && !m_sigImage.isNull()
+        && m_pageRect.contains(m_sigGhostPos))
+    {
+        QPainter p(this);
+        p.setRenderHint(QPainter::SmoothPixmapTransform);
+
+        double pxPerPt = (m_pageRect.width() > 0 && pageWidthPt() > 0)
+                         ? m_pageRect.width() / pageWidthPt() : 1.0;
+        double ghostW = m_sigW * pxPerPt;
+        double ghostH = m_sigH * pxPerPt;
+
+        // Draw centered on cursor, 70% opacity
+        QRectF ghostRect(m_sigGhostPos.x() - ghostW / 2.0,
+                         m_sigGhostPos.y() - ghostH / 2.0,
+                         ghostW, ghostH);
+        p.setOpacity(0.70);
+        p.drawImage(ghostRect, m_sigImage);
+        p.setOpacity(1.0);
+
+        // Dashed border
+        p.setPen(QPen(QColor(0, 120, 215), 1.5, Qt::DashLine));
+        p.drawRect(ghostRect);
+
+        // Hint text
+        p.setPen(QColor(60, 60, 60));
+        p.setFont(QFont("sans-serif", 9));
+        p.drawText(m_pageRect.bottomLeft() + QPointF(4, -6),
+                   "Click to place signature  •  Escape to cancel");
+        return;
+    }
 
     QPainter p(this);
     p.setRenderHint(QPainter::Antialiasing);

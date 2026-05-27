@@ -59,6 +59,10 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     connect(m_viewer, &PdfViewer::pageChanged,    this, &MainWindow::onPageChanged);
     connect(m_viewer, &PdfViewer::zoomChanged,    this, &MainWindow::onZoomChanged);
     connect(m_viewer, &PdfViewer::annotationCommitted, this, &MainWindow::onAnnotation);
+    connect(m_viewer, &PdfViewer::signatureCancelled, this, [this](){
+        m_pendingSig = QImage();
+        statusBar()->clearMessage();
+    });
 
     // PageManager signals
     connect(m_pageManager, &PageManager::pageSelected, m_viewer,      &PdfViewer::goToPage);
@@ -527,12 +531,11 @@ void MainWindow::onInsertSignature() {
     QImage sig = dlg.result();
     if (sig.isNull()) return;
 
-    // Place at bottom-right of current page with default size
-    try {
-        Operations::overlayImageOnPage(m_qpdf, m_viewer->currentPage(), sig, 100, 40);
-        setModified(true);
-        reloadFromQpdf();
-    } catch (const std::exception& e) { QMessageBox::critical(this, "Signature Error", e.what()); }
+    // Store the signature and enter drag-placement mode.
+    // The user moves the ghost to the desired position and clicks to commit.
+    m_pendingSig = sig;
+    m_viewer->beginSignaturePlacement(sig);
+    statusBar()->showMessage("Move the signature to the desired position and click to place  •  Escape to cancel");
 }
 
 void MainWindow::onApplyRedactions() {
@@ -634,6 +637,17 @@ void MainWindow::onAnnotation(const QVariantMap& payload) {
             Annotations::addRedact(m_qpdf, pg,
                 payload["x0"].toDouble(), payload["y0"].toDouble(),
                 payload["x1"].toDouble(), payload["y1"].toDouble());
+        else if (type == "signature") {
+            if (!m_pendingSig.isNull()) {
+                Operations::overlayImageOnPage(m_qpdf, pg, m_pendingSig,
+                    payload["sigW"].toDouble(), payload["sigH"].toDouble(),
+                    payload["x"].toDouble(),    payload["y"].toDouble());
+                m_pendingSig = QImage(); // clear pending image
+                // Return to pointer mode after placement
+                m_viewer->setAnnotationTool("pointer");
+                statusBar()->clearMessage();
+            }
+        }
 
         setModified(true);
         // For annotations we reload the viewer quietly (the visual feedback is fast)
