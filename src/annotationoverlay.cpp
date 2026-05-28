@@ -82,7 +82,16 @@ void AnnotationOverlay::resetDrawState() {
 
 void AnnotationOverlay::mousePressEvent(QMouseEvent* event) {
     try {
-        if (m_tool == "pointer" || !m_pageRect.contains(event->position())) {
+        if (m_tool == "pointer") {
+            event->ignore();
+            return;
+        }
+        // Only reject clicks that are literally outside the visible widget area.
+        // We do NOT guard on m_pageRect here: that rect is computed via
+        // mapFromScene() and can be stale or have rounding discrepancies that
+        // silently block every annotation click.  Coordinate clamping and
+        // page-bounds validation happen in the QPDF layer instead.
+        if (!rect().contains(event->position().toPoint())) {
             event->ignore();
             return;
         }

@@ -854,7 +854,8 @@ void MainWindow::onAnnotation(const QVariantMap& payload) {
         setModified(true);
         reloadFromQpdf();
     } catch (const std::exception& e) {
-        qWarning() << "Annotation error:" << e.what();
+        QMessageBox::warning(this, "Annotation Error",
+                             QString("Failed to apply annotation:\n%1").arg(e.what()));
     }
 }
 
