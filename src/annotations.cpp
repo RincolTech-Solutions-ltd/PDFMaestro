@@ -1,6 +1,7 @@
 #include "annotations.h"
 #include <qpdf/QPDFPageDocumentHelper.hh>
 #include <qpdf/QPDFPageObjectHelper.hh>
+#include <cstdio>
 
 namespace Annotations {
 
@@ -102,16 +103,109 @@ void addInk(QPDF& pdf, int pageIdx,
     appendAnnot(pdf, pageIdx, annot);
 }
 
+// Build a minimal Form XObject appearance stream for a rubber stamp.
+// The appearance draws a coloured oval border + the stamp name in red
+// text, with a transparent (no-fill) background so underlying page text
+// is never hidden.  Without /AP, viewers (Poppler included) synthesise
+// their own appearance — typically a solid white-filled box that erases
+// all text beneath the stamp rect.
+// Locale-safe helper: format a double as "n.nnn" regardless of C locale.
+// Qt's QCoreApplication sets the C locale to the system locale on startup,
+// which means std::ostringstream and printf use commas in some locales.
+// PDF requires dots.  snprintf with a known format is NOT locale-independent
+// on all platforms, so we format the integer and fractional parts ourselves.
+static std::string d2s(double v)
+{
+    // Six decimal places, no locale dependence.
+    char buf[64];
+    int n = std::snprintf(buf, sizeof(buf), "%.6g", v);
+    if (n <= 0 || n >= (int)sizeof(buf)) return "0";
+    // Replace any comma (European locale) with dot.
+    for (int i = 0; i < n; ++i) if (buf[i] == ',') buf[i] = '.';
+    return std::string(buf, n);
+}
+
+static QPDFObjectHandle makeStampAP(QPDF& pdf,
+                                     double w, double h,
+                                     const std::string& label)
+{
+    const double rx = w / 2.0, ry = h / 2.0;
+    const double cx = rx, cy = ry;
+    const double kx = rx * 0.5523, ky = ry * 0.5523;
+    const double fs = h * 0.40;
+
+    // Build content stream using d2s() so floats always use '.' as separator.
+    std::string cs;
+    cs += "q\n";
+    cs += "1 0 0 RG\n";   // red stroke, transparent background
+    cs += "1.5 w\n";
+    // Ellipse via four Bézier curves
+    cs += d2s(cx)       + " " + d2s(cy + ry) + " m\n";
+    cs += d2s(cx + kx)  + " " + d2s(cy + ry) + " " +
+          d2s(cx + rx)  + " " + d2s(cy + ky) + " " +
+          d2s(cx + rx)  + " " + d2s(cy)      + " c\n";
+    cs += d2s(cx + rx)  + " " + d2s(cy - ky) + " " +
+          d2s(cx + kx)  + " " + d2s(cy - ry) + " " +
+          d2s(cx)       + " " + d2s(cy - ry) + " c\n";
+    cs += d2s(cx - kx)  + " " + d2s(cy - ry) + " " +
+          d2s(cx - rx)  + " " + d2s(cy - ky) + " " +
+          d2s(cx - rx)  + " " + d2s(cy)      + " c\n";
+    cs += d2s(cx - rx)  + " " + d2s(cy + ky) + " " +
+          d2s(cx - kx)  + " " + d2s(cy + ry) + " " +
+          d2s(cx)       + " " + d2s(cy + ry) + " c\n";
+    cs += "S\n";           // stroke only — no fill
+
+    const double charW = fs * 0.6;
+    const double textW = charW * static_cast<double>(label.size());
+    const double tx    = (w - textW) / 2.0;
+    const double ty    = cy - fs * 0.35;
+
+    cs += "BT\n";
+    cs += "/Helvetica-Bold " + d2s(fs) + " Tf\n";
+    cs += "1 0 0 rg\n";
+    cs += d2s(tx) + " " + d2s(ty) + " Td\n";
+    cs += "(" + label + ") Tj\n";
+    cs += "ET\n";
+    cs += "Q\n";
+
+    auto apStream = QPDFObjectHandle::newStream(&pdf, cs);
+    auto d = apStream.getDict();
+    d.replaceKey("/Type",    QPDFObjectHandle::newName("/XObject"));
+    d.replaceKey("/Subtype", QPDFObjectHandle::newName("/Form"));
+    d.replaceKey("/FormType",QPDFObjectHandle::newInteger(1));
+    d.replaceKey("/BBox",    makeRect(0, 0, w, h));
+
+    // Add Helvetica-Bold to the form's /Resources so the text operator works
+    auto fontObj = QPDFObjectHandle::newDictionary();
+    fontObj.replaceKey("/Type",     QPDFObjectHandle::newName("/Font"));
+    fontObj.replaceKey("/Subtype",  QPDFObjectHandle::newName("/Type1"));
+    fontObj.replaceKey("/BaseFont", QPDFObjectHandle::newName("/Helvetica-Bold"));
+    auto fontDict = QPDFObjectHandle::newDictionary();
+    fontDict.replaceKey("/Helvetica-Bold", pdf.makeIndirectObject(fontObj));
+    auto res = QPDFObjectHandle::newDictionary();
+    res.replaceKey("/Font", fontDict);
+    d.replaceKey("/Resources", res);
+
+    return apStream;
+}
+
 void addStamp(QPDF& pdf, int pageIdx,
               double x, double y, double w, double h,
               const QString& name)
 {
+    auto apStream = pdf.makeIndirectObject(
+        makeStampAP(pdf, w, h, name.toUpper().toStdString()));
+
+    auto apDict = QPDFObjectHandle::newDictionary();
+    apDict.replaceKey("/N", apStream);   // /N = normal appearance
+
     auto annot = QPDFObjectHandle::newDictionary();
     annot.replaceKey("/Type",    QPDFObjectHandle::newName("/Annot"));
     annot.replaceKey("/Subtype", QPDFObjectHandle::newName("/Stamp"));
     annot.replaceKey("/Rect",    makeRect(x, y, x+w, y+h));
     annot.replaceKey("/Name",    QPDFObjectHandle::newName("/" + name.toStdString()));
     annot.replaceKey("/F",       QPDFObjectHandle::newInteger(4));
+    annot.replaceKey("/AP",      apDict);
     appendAnnot(pdf, pageIdx, annot);
 }
 
