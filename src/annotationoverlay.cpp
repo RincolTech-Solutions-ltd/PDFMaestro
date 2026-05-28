@@ -164,13 +164,12 @@ void AnnotationOverlay::mouseDoubleClickEvent(QMouseEvent*) {
 }
 
 void AnnotationOverlay::commitHighlight(const QPointF& p1, const QPointF& p2) {
-    auto [x0,y0] = toPdf(QPointF(std::min(p1.x(),p2.x()), std::min(p1.y(),p2.y())));
-    auto [x1,y1] = toPdf(QPointF(std::max(p1.x(),p2.x()), std::max(p1.y(),p2.y())));
-    if (std::abs(x1-x0) < 2 || std::abs(y1-y0) < 2) return;
+    // Pass raw viewport coordinates — MainWindow converts via viewportToPdf()
+    // (mapToScene-based, always exact) instead of the stale m_pageRect-based toPdf().
     emit annotationCommitted({
-        {"type",    "highlight"},
-        {"page",    m_pageIdx},
-        {"x0",      x0}, {"y0", y0}, {"x1", x1}, {"y1", y1}
+        {"type", "highlight"},
+        {"vpX0", p1.x()}, {"vpY0", p1.y()},
+        {"vpX1", p2.x()}, {"vpY1", p2.y()}
     });
 }
 
@@ -218,24 +217,20 @@ void AnnotationOverlay::commitStamp(const QPointF& pos) {
     layout->addWidget(btns);
     if (dlg.exec() != QDialog::Accepted) return;
 
-    auto [x, y] = toPdf(pos);
     emit annotationCommitted({
         {"type",  "stamp"},
-        {"page",  m_pageIdx},
-        {"x",     x}, {"y", y},
+        {"vpX",   pos.x()},
+        {"vpY",   pos.y()},
         {"w",     144.0}, {"h", 48.0},
         {"name",  combo->currentText()}
     });
 }
 
 void AnnotationOverlay::commitRedact(const QPointF& p1, const QPointF& p2) {
-    auto [x0,y0] = toPdf(QPointF(std::min(p1.x(),p2.x()), std::min(p1.y(),p2.y())));
-    auto [x1,y1] = toPdf(QPointF(std::max(p1.x(),p2.x()), std::max(p1.y(),p2.y())));
-    if (std::abs(x1-x0) < 2 || std::abs(y1-y0) < 2) return;
     emit annotationCommitted({
         {"type", "redact"},
-        {"page", m_pageIdx},
-        {"x0",   x0}, {"y0", y0}, {"x1", x1}, {"y1", y1}
+        {"vpX0", p1.x()}, {"vpY0", p1.y()},
+        {"vpX1", p2.x()}, {"vpY1", p2.y()}
     });
 }
 

@@ -745,11 +745,21 @@ void MainWindow::onAnnotation(const QVariantMap& payload) {
         int pg = payload["page"].toInt();
 
         if (type == "highlight") {
-            double x0 = payload["x0"].toDouble(), y0 = payload["y0"].toDouble();
-            double x1 = payload["x1"].toDouble(), y1 = payload["y1"].toDouble();
-            Annotations::Quad q{ x0,y0, x1,y0, x1,y1, x0,y1 };
+            // Use live mapToScene conversion — immune to stale m_pageRect
+            const auto a = m_viewer->viewportToPdf(
+                QPointF(payload["vpX0"].toDouble(), payload["vpY0"].toDouble()));
+            const auto b = m_viewer->viewportToPdf(
+                QPointF(payload["vpX1"].toDouble(), payload["vpY1"].toDouble()));
+            // Normalise to min/max in PDF space (PDF Y increases upward)
+            const double x0 = std::min(a.xPdf, b.xPdf);
+            const double x1 = std::max(a.xPdf, b.xPdf);
+            const double y0 = std::min(a.yPdf, b.yPdf);   // bottom in PDF
+            const double y1 = std::max(a.yPdf, b.yPdf);   // top in PDF
+            if (std::abs(x1-x0) < 2 || std::abs(y1-y0) < 2) return;
+            // Quad corners: tl, tr, br, bl (PDF Y-up order used by Poppler)
+            Annotations::Quad q{ x0,y1, x1,y1, x1,y0, x0,y0 };
             pushUndoState();
-            Annotations::addHighlight(*m_qpdf, pg, { q });
+            Annotations::addHighlight(*m_qpdf, a.pageIdx, { q });
         }
         else if (type == "note") {
             pushUndoState();
@@ -769,17 +779,29 @@ void MainWindow::onAnnotation(const QVariantMap& payload) {
             Annotations::addInk(*m_qpdf, pg, strokes);
         }
         else if (type == "stamp") {
+            const auto pos = m_viewer->viewportToPdf(
+                QPointF(payload["vpX"].toDouble(), payload["vpY"].toDouble()));
+            const double w = payload["w"].toDouble();
+            const double h = payload["h"].toDouble();
             pushUndoState();
-            Annotations::addStamp(*m_qpdf, pg,
-                payload["x"].toDouble(), payload["y"].toDouble(),
-                payload["w"].toDouble(), payload["h"].toDouble(),
+            Annotations::addStamp(*m_qpdf, pos.pageIdx,
+                pos.xPdf - w / 2.0,   // centre stamp on click point
+                pos.yPdf - h / 2.0,
+                w, h,
                 payload["name"].toString());
         }
         else if (type == "redact") {
+            const auto a = m_viewer->viewportToPdf(
+                QPointF(payload["vpX0"].toDouble(), payload["vpY0"].toDouble()));
+            const auto b = m_viewer->viewportToPdf(
+                QPointF(payload["vpX1"].toDouble(), payload["vpY1"].toDouble()));
+            const double x0 = std::min(a.xPdf, b.xPdf);
+            const double x1 = std::max(a.xPdf, b.xPdf);
+            const double y0 = std::min(a.yPdf, b.yPdf);
+            const double y1 = std::max(a.yPdf, b.yPdf);
+            if (std::abs(x1-x0) < 2 || std::abs(y1-y0) < 2) return;
             pushUndoState();
-            Annotations::addRedact(*m_qpdf, pg,
-                payload["x0"].toDouble(), payload["y0"].toDouble(),
-                payload["x1"].toDouble(), payload["y1"].toDouble());
+            Annotations::addRedact(*m_qpdf, a.pageIdx, x0, y0, x1, y1);
         }
         else if (type == "signature") {
             // Don't burn to QPDF yet — add as a moveable scene overlay.
