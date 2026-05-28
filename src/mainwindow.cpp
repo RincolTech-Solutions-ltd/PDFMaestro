@@ -19,9 +19,48 @@
 #include <QInputDialog>
 #include <QFileInfo>
 #include <QPainter>
+#include <QtMath>
 
 #include <qpdf/QPDF.hh>
 #include <qpdf/QPDFWriter.hh>
+#include <poppler-qt6.h>
+
+// ── Font detection helpers ────────────────────────────────────────────────────
+
+// Map a raw Poppler font name (e.g. "ABCDEF+Helvetica-BoldOblique") to the
+// nearest standard PDF Type1 font name.
+static QString mapToStandardFont(const QString& rawName) {
+    // Strip the 6-char subset prefix (e.g. "ABCDEF+")
+    int plus = rawName.indexOf('+');
+    const QString n = (plus >= 0 ? rawName.mid(plus + 1) : rawName).toLower();
+
+    const bool bold   = n.contains("bold") || n.contains("-bd") || n.endsWith("b");
+    const bool italic = n.contains("italic") || n.contains("oblique")
+                     || n.contains("-it")    || n.contains("-obl");
+
+    // Serif family
+    if (n.contains("times")    || n.contains("roman")   || n.contains("serif")
+     || n.contains("garamond") || n.contains("georgia")  || n.contains("minion")
+     || n.contains("palatino") || n.contains("bookman")) {
+        if (bold && italic) return "Times-BoldItalic";
+        if (bold)           return "Times-Bold";
+        if (italic)         return "Times-Italic";
+        return "Times-Roman";
+    }
+    // Monospace family
+    if (n.contains("courier") || n.contains("mono")    || n.contains("consol")
+     || n.contains("fixed")   || n.contains("menlo")   || n.contains("typewriter")) {
+        if (bold && italic) return "Courier-BoldOblique";
+        if (bold)           return "Courier-Bold";
+        if (italic)         return "Courier-Oblique";
+        return "Courier";
+    }
+    // Sans-serif (Helvetica) — default
+    if (bold && italic) return "Helvetica-BoldOblique";
+    if (bold)           return "Helvetica-Bold";
+    if (italic)         return "Helvetica-Oblique";
+    return "Helvetica";
+}
 
 // ── Construction ──────────────────────────────────────────────────────────────
 
@@ -30,6 +69,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     setMinimumSize(900, 640);
     setAcceptDrops(true);
 
+    m_qpdf   = std::make_unique<QPDF>();
     m_config = new Config(this);
 
     // Central: viewer + search bar stacked vertically
@@ -114,6 +154,8 @@ void MainWindow::setupDocks() {
 }
 
 void MainWindow::setupActions() {
+    m_actUndo        = new QAction(QIcon::fromTheme("edit-undo"),           "Undo",               this);
+    m_actRedo        = new QAction(QIcon::fromTheme("edit-redo"),           "Redo",               this);
     m_actSave        = new QAction(QIcon::fromTheme("document-save"),       "Save",               this);
     m_actSaveAs      = new QAction(QIcon::fromTheme("document-save-as"),    "Save As…",           this);
     m_actClose       = new QAction(QIcon::fromTheme("document-close"),      "Close",              this);
@@ -126,6 +168,10 @@ void MainWindow::setupActions() {
     m_actApplyRedact = new QAction("Apply Redactions",    this);
     m_actFind        = new QAction(QIcon::fromTheme("edit-find"), "Find…",  this);
 
+    m_actUndo->setShortcut(QKeySequence::Undo);
+    m_actRedo->setShortcut(QKeySequence::Redo);
+    m_actUndo->setEnabled(false);
+    m_actRedo->setEnabled(false);
     m_actSave->setShortcut(QKeySequence::Save);
     m_actSaveAs->setShortcut(QKeySequence::SaveAs);
     m_actFind->setShortcut(QKeySequence::Find);
@@ -143,17 +189,20 @@ void MainWindow::setupActions() {
         m_toolGroup->addAction(act);
         return act;
     };
-    makeToolAction("cursor",         "Pointer",   "pointer"  )->setChecked(true);
-    makeToolAction("draw-highlight", "Highlight", "highlight");
-    makeToolAction("insert-text",    "Note",      "note"     );
-    makeToolAction("draw-freehand",  "Ink",       "ink"      );
-    makeToolAction("stamp",          "Stamp",     "stamp"    );
-    makeToolAction("edit-clear",     "Redact",    "redact"   );
+    makeToolAction("cursor",         "Pointer",    "pointer"  )->setChecked(true);
+    makeToolAction("draw-highlight", "Highlight",  "highlight");
+    makeToolAction("insert-text",    "Note",        "note"     );
+    makeToolAction("draw-freehand",  "Ink",         "ink"      );
+    makeToolAction("stamp",          "Stamp",       "stamp"    );
+    makeToolAction("edit-clear",     "Redact",      "redact"   );
+    makeToolAction("format-text-bold", "Add Text",  "addtext"  );
 
     connect(m_toolGroup, &QActionGroup::triggered, this, [this](QAction* act){
         m_viewer->setAnnotationTool(act->data().toString());
     });
 
+    connect(m_actUndo,        &QAction::triggered, this, &MainWindow::onUndo);
+    connect(m_actRedo,        &QAction::triggered, this, &MainWindow::onRedo);
     connect(m_actSave,        &QAction::triggered, this, &MainWindow::onSave);
     connect(m_actSaveAs,      &QAction::triggered, this, &MainWindow::onSaveAs);
     connect(m_actClose,       &QAction::triggered, this, &MainWindow::onClose);
@@ -189,6 +238,9 @@ void MainWindow::setupMenus() {
 
     // Edit
     auto* edit = menuBar()->addMenu("&Edit");
+    edit->addAction(m_actUndo);
+    edit->addAction(m_actRedo);
+    edit->addSeparator();
     edit->addAction(m_actRotateCW);
     edit->addAction(m_actRotateCCW);
     edit->addAction(m_actDeletePage);
@@ -248,6 +300,9 @@ void MainWindow::setupToolbar() {
     tb->addAction(QIcon::fromTheme("document-open"),  "Open",   this, &MainWindow::onOpen);
     tb->addAction(m_actSave);
     tb->addSeparator();
+    tb->addAction(m_actUndo);
+    tb->addAction(m_actRedo);
+    tb->addSeparator();
     tb->addAction(m_actRotateCW);
     tb->addAction(m_actRotateCCW);
     tb->addAction(m_actDeletePage);
@@ -288,8 +343,14 @@ void MainWindow::loadFile(const QString& path) {
     // Discard any pending sigs from a previous document (don't burn them)
     m_viewer->clearPendingSignatures();
     m_pendingSig = QImage();
+    // Clear undo/redo history when a new document is opened
+    m_undoStack.clear();
+    m_redoStack.clear();
+    m_actUndo->setEnabled(false);
+    m_actRedo->setEnabled(false);
     try {
-        m_qpdf.processFile(path.toStdString().c_str());
+        m_qpdf = std::make_unique<QPDF>();
+        m_qpdf->processFile(path.toStdString().c_str());
         m_qpdfLoaded = true;
         m_currentPath = path;
         m_modified = false;
@@ -308,7 +369,7 @@ void MainWindow::loadFile(const QString& path) {
 
 void MainWindow::reloadFromQpdf() {
     if (!m_qpdfLoaded) return;
-    QByteArray bytes = Operations::toBytes(m_qpdf);
+    QByteArray bytes = Operations::toBytes(*m_qpdf);
     m_viewer->loadFromBytes(bytes, m_currentPath);
     pushPageCountToPageManager();
 }
@@ -369,7 +430,7 @@ void MainWindow::burnPendingSignatures() {
     if (sigs.isEmpty()) return;
     try {
         for (const auto& s : sigs)
-            Operations::overlayImageOnPage(m_qpdf, s.page, s.image,
+            Operations::overlayImageOnPage(*m_qpdf, s.page, s.image,
                                            s.sigW, s.sigH, s.x, s.y);
         // Reload viewer so the burned-in sigs render via Poppler
         reloadFromQpdf();
@@ -379,12 +440,56 @@ void MainWindow::burnPendingSignatures() {
     }
 }
 
+// ── Undo / Redo ───────────────────────────────────────────────────────────────
+
+void MainWindow::pushUndoState() {
+    if (!m_qpdfLoaded) return;
+    m_undoStack.append(Operations::toBytes(*m_qpdf));
+    if (m_undoStack.size() > MAX_UNDO)
+        m_undoStack.removeFirst();
+    m_redoStack.clear();
+    m_actUndo->setEnabled(true);
+    m_actRedo->setEnabled(false);
+}
+
+void MainWindow::onUndo() {
+    if (!m_qpdfLoaded || m_undoStack.isEmpty()) return;
+    // Snapshot current state into redo stack
+    m_redoStack.append(Operations::toBytes(*m_qpdf));
+    // Restore previous state
+    const QByteArray prev = m_undoStack.takeLast();
+    m_qpdf = std::make_unique<QPDF>();
+    m_qpdf->processMemoryFile("undo-state",
+                               prev.constData(),
+                               static_cast<size_t>(prev.size()));
+    m_actUndo->setEnabled(!m_undoStack.isEmpty());
+    m_actRedo->setEnabled(true);
+    setModified(true);
+    reloadFromQpdf();
+}
+
+void MainWindow::onRedo() {
+    if (!m_qpdfLoaded || m_redoStack.isEmpty()) return;
+    // Snapshot current state into undo stack
+    m_undoStack.append(Operations::toBytes(*m_qpdf));
+    // Restore redo state
+    const QByteArray next = m_redoStack.takeLast();
+    m_qpdf = std::make_unique<QPDF>();
+    m_qpdf->processMemoryFile("redo-state",
+                               next.constData(),
+                               static_cast<size_t>(next.size()));
+    m_actUndo->setEnabled(true);
+    m_actRedo->setEnabled(!m_redoStack.isEmpty());
+    setModified(true);
+    reloadFromQpdf();
+}
+
 void MainWindow::onSave() {
     if (m_currentPath.isEmpty()) { onSaveAs(); return; }
     if (!m_qpdfLoaded) return;
     burnPendingSignatures();   // commit any draggable overlays to QPDF first
     try {
-        QPDFWriter w(m_qpdf, m_currentPath.toStdString().c_str());
+        QPDFWriter w(*m_qpdf, m_currentPath.toStdString().c_str());
         w.write();
         setModified(false);
     } catch (const std::exception& e) {
@@ -399,7 +504,7 @@ void MainWindow::onSaveAs() {
     if (path.isEmpty()) return;
     burnPendingSignatures();   // commit overlays before writing
     try {
-        QPDFWriter w(m_qpdf, path.toStdString().c_str());
+        QPDFWriter w(*m_qpdf, path.toStdString().c_str());
         w.write();
         m_currentPath = path;
         setModified(false);
@@ -458,7 +563,8 @@ void MainWindow::setModified(bool v) {
 void MainWindow::onRotateCW() {
     if (!m_qpdfLoaded) return;
     try {
-        Operations::rotatePage(m_qpdf, m_viewer->currentPage(), 90);
+        pushUndoState();
+        Operations::rotatePage(*m_qpdf, m_viewer->currentPage(), 90);
         setModified(true);
         reloadFromQpdf();
     } catch (const std::exception& e) { QMessageBox::critical(this, "Error", e.what()); }
@@ -467,7 +573,8 @@ void MainWindow::onRotateCW() {
 void MainWindow::onRotateCCW() {
     if (!m_qpdfLoaded) return;
     try {
-        Operations::rotatePage(m_qpdf, m_viewer->currentPage(), -90);
+        pushUndoState();
+        Operations::rotatePage(*m_qpdf, m_viewer->currentPage(), -90);
         setModified(true);
         reloadFromQpdf();
     } catch (const std::exception& e) { QMessageBox::critical(this, "Error", e.what()); }
@@ -479,7 +586,8 @@ void MainWindow::onDeletePage() {
             QString("Delete page %1?").arg(m_viewer->currentPage() + 1))
         != QMessageBox::Yes) return;
     try {
-        Operations::deletePages(m_qpdf, { m_viewer->currentPage() });
+        pushUndoState();
+        Operations::deletePages(*m_qpdf, { m_viewer->currentPage() });
         setModified(true);
         reloadFromQpdf();
     } catch (const std::exception& e) { QMessageBox::critical(this, "Error", e.what()); }
@@ -497,10 +605,11 @@ void MainWindow::onMerge() {
         if (!m_qpdfLoaded) return;
     }
     try {
+        pushUndoState();
         for (const auto& f : files) {
             QPDF src;
             src.processFile(f.toStdString().c_str());
-            Operations::mergeInto(m_qpdf, src);
+            Operations::mergeInto(*m_qpdf, src);
         }
         setModified(true);
         reloadFromQpdf();
@@ -529,7 +638,7 @@ void MainWindow::onSplit() {
                 ranges.append({i, i});
         }
 
-        auto parts = Operations::splitByRanges(m_qpdf, ranges, outDir, base);
+        auto parts = Operations::splitByRanges(*m_qpdf, ranges, outDir, base);
         QMessageBox::information(this, "Split", QString("Split into %1 file(s).").arg(parts.size()));
     } catch (const std::exception& e) { QMessageBox::critical(this, "Split Error", e.what()); }
 }
@@ -539,10 +648,11 @@ void MainWindow::onCrop() {
     CropDialog dlg(this);
     if (dlg.exec() != QDialog::Accepted) return;
     try {
+        pushUndoState();
         if (dlg.allPages())
-            Operations::cropAllPages(m_qpdf, dlg.left(), dlg.bottom(), dlg.right(), dlg.top());
+            Operations::cropAllPages(*m_qpdf, dlg.left(), dlg.bottom(), dlg.right(), dlg.top());
         else
-            Operations::cropPage(m_qpdf, m_viewer->currentPage(), dlg.left(), dlg.bottom(), dlg.right(), dlg.top());
+            Operations::cropPage(*m_qpdf, m_viewer->currentPage(), dlg.left(), dlg.bottom(), dlg.right(), dlg.top());
         setModified(true);
         reloadFromQpdf();
     } catch (const std::exception& e) { QMessageBox::critical(this, "Crop Error", e.what()); }
@@ -569,8 +679,9 @@ void MainWindow::onApplyRedactions() {
             "This will permanently burn all redaction boxes into the PDF. Continue?")
         != QMessageBox::Yes) return;
     try {
+        pushUndoState();
         for (int i = 0; i < m_viewer->pageCount(); ++i)
-            Annotations::applyRedactions(m_qpdf, i);
+            Annotations::applyRedactions(*m_qpdf, i);
         setModified(true);
         reloadFromQpdf();
     } catch (const std::exception& e) { QMessageBox::critical(this, "Redact Error", e.what()); }
@@ -637,12 +748,15 @@ void MainWindow::onAnnotation(const QVariantMap& payload) {
             double x0 = payload["x0"].toDouble(), y0 = payload["y0"].toDouble();
             double x1 = payload["x1"].toDouble(), y1 = payload["y1"].toDouble();
             Annotations::Quad q{ x0,y0, x1,y0, x1,y1, x0,y1 };
-            Annotations::addHighlight(m_qpdf, pg, { q });
+            pushUndoState();
+            Annotations::addHighlight(*m_qpdf, pg, { q });
         }
-        else if (type == "note")
-            Annotations::addTextNote(m_qpdf, pg,
+        else if (type == "note") {
+            pushUndoState();
+            Annotations::addTextNote(*m_qpdf, pg,
                 payload["x"].toDouble(), payload["y"].toDouble(),
                 payload["contents"].toString());
+        }
         else if (type == "ink") {
             QVector<QVector<QPointF>> strokes;
             for (const auto& sv : payload["strokes"].toList()) {
@@ -651,22 +765,25 @@ void MainWindow::onAnnotation(const QVariantMap& payload) {
                     s << pv.toPointF();
                 strokes << s;
             }
-            Annotations::addInk(m_qpdf, pg, strokes);
+            pushUndoState();
+            Annotations::addInk(*m_qpdf, pg, strokes);
         }
-        else if (type == "stamp")
-            Annotations::addStamp(m_qpdf, pg,
+        else if (type == "stamp") {
+            pushUndoState();
+            Annotations::addStamp(*m_qpdf, pg,
                 payload["x"].toDouble(), payload["y"].toDouble(),
                 payload["w"].toDouble(), payload["h"].toDouble(),
                 payload["name"].toString());
-        else if (type == "redact")
-            Annotations::addRedact(m_qpdf, pg,
+        }
+        else if (type == "redact") {
+            pushUndoState();
+            Annotations::addRedact(*m_qpdf, pg,
                 payload["x0"].toDouble(), payload["y0"].toDouble(),
                 payload["x1"].toDouble(), payload["y1"].toDouble());
+        }
         else if (type == "signature") {
             // Don't burn to QPDF yet — add as a moveable scene overlay.
             // It gets burned when the user explicitly saves.
-            // Use raw viewport coordinates (vpX/vpY) so PdfViewer::addSigOverlayAtViewport
-            // can call mapToScene() for exact placement regardless of scroll position.
             if (!m_pendingSig.isNull()) {
                 m_viewer->addSigOverlayAtViewport(
                     m_pendingSig,
@@ -677,11 +794,64 @@ void MainWindow::onAnnotation(const QVariantMap& payload) {
             statusBar()->showMessage(
                 "Signature placed — drag to reposition, Delete to remove, Save to commit", 4000);
             setModified(true);
-            return;   // skip reloadFromQpdf — overlay is already visible in scene
+            return;
+        }
+        else if (type == "addtext") {
+            // Convert viewport click → PDF coordinates using the viewer's live transform
+            const auto pos = m_viewer->viewportToPdf(
+                QPointF(payload["vpX"].toDouble(), payload["vpY"].toDouble()));
+
+            // Auto-detect font from the nearest text on that page
+            QString detectedFont = "Helvetica";
+            double  detectedSize = 12.0;
+            if (m_viewer->document()) {
+                std::unique_ptr<Poppler::Page> ppage(
+                    m_viewer->document()->page(pos.pageIdx));
+                if (ppage) {
+                    const double pageHPt = ppage->pageSizeF().height();
+                    // Poppler text coords: top-left origin, Y down
+                    const double popplerY = pageHPt - pos.yPdf;
+                    // textList() returns std::vector<std::unique_ptr<TextBox>> on
+                    // Poppler 24.x.  TextBox::fontName()/fontSize() are not exposed
+                    // in the Qt6 bindings — approximate size from bounding-box height.
+                    auto boxes = ppage->textList();
+                    double bestDist = 1e18;
+                    const Poppler::TextBox* best = nullptr;
+                    for (const auto& box : boxes) {
+                        const QPointF c = box->boundingBox().center();
+                        const double d = qSqrt(qPow(c.x() - pos.xPdf, 2)
+                                             + qPow(c.y() - popplerY, 2));
+                        if (d < bestDist) { bestDist = d; best = box.get(); }
+                    }
+                    if (best && bestDist < 120.0) {
+                        // BBox height ≈ font size + small leading; 0.8 is a
+                        // good empirical factor for single-line text boxes.
+                        const double h = best->boundingBox().height();
+                        if (h > 1.0) detectedSize = h * 0.80;
+                    }
+                    // detectedFont stays "Helvetica" — font name is not in Qt6
+                    // TextBox API at this Poppler version.
+                }
+            }
+
+            // Show dialog pre-populated with detected values
+            AddTextDialog dlg(detectedFont, detectedSize, this);
+            if (dlg.exec() != QDialog::Accepted) return;
+            if (dlg.text().trimmed().isEmpty()) return;
+
+            pushUndoState();
+            Operations::injectText(*m_qpdf, pos.pageIdx,
+                                   pos.xPdf, pos.yPdf,
+                                   dlg.text(),
+                                   dlg.pdfFontName(),
+                                   dlg.fontSize(),
+                                   dlg.color());
+            setModified(true);
+            reloadFromQpdf();
+            return;
         }
 
         setModified(true);
-        // For non-signature annotations reload the viewer
         reloadFromQpdf();
     } catch (const std::exception& e) {
         qWarning() << "Annotation error:" << e.what();
@@ -691,7 +861,8 @@ void MainWindow::onAnnotation(const QVariantMap& payload) {
 void MainWindow::onPageOrder(const QVector<int>& newOrder) {
     if (!m_qpdfLoaded) return;
     try {
-        Operations::applyPageOrder(m_qpdf, newOrder);
+        pushUndoState();
+        Operations::applyPageOrder(*m_qpdf, newOrder);
         setModified(true);
         reloadFromQpdf();
     } catch (const std::exception& e) { QMessageBox::critical(this, "Error", e.what()); }
@@ -700,7 +871,8 @@ void MainWindow::onPageOrder(const QVector<int>& newOrder) {
 void MainWindow::onPageDeleted(int origIdx) {
     if (!m_qpdfLoaded) return;
     try {
-        Operations::deletePages(m_qpdf, { origIdx });
+        pushUndoState();
+        Operations::deletePages(*m_qpdf, { origIdx });
         setModified(true);
         reloadFromQpdf();
         m_pageManager->resetIndices();
@@ -710,7 +882,8 @@ void MainWindow::onPageDeleted(int origIdx) {
 void MainWindow::onPageRotated(int origIdx, int degrees) {
     if (!m_qpdfLoaded) return;
     try {
-        Operations::rotatePage(m_qpdf, origIdx, degrees);
+        pushUndoState();
+        Operations::rotatePage(*m_qpdf, origIdx, degrees);
         setModified(true);
         reloadFromQpdf();
     } catch (const std::exception& e) { QMessageBox::critical(this, "Error", e.what()); }

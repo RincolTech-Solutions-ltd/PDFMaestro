@@ -23,6 +23,7 @@ static QCursor cursorForTool(const QString& t) {
     if (t == "stamp")      return QCursor(Qt::PointingHandCursor);
     if (t == "redact")     return QCursor(Qt::CrossCursor);
     if (t == "signature")  return QCursor(Qt::CrossCursor);
+    if (t == "addtext")    return QCursor(Qt::IBeamCursor);
     return QCursor(Qt::ArrowCursor);
 }
 
@@ -88,6 +89,8 @@ void AnnotationOverlay::mousePressEvent(QMouseEvent* event) {
         QPointF pos = event->position();
         if (m_tool == "signature") {
             commitSignature(pos);
+        } else if (m_tool == "addtext") {
+            commitAddText(pos);
         } else if (m_tool == "highlight" || m_tool == "redact") {
             m_dragStart = pos;
             m_dragCur   = pos;
@@ -237,21 +240,28 @@ void AnnotationOverlay::keyPressEvent(QKeyEvent* event) {
     }
 }
 
+void AnnotationOverlay::commitAddText(const QPointF& screenPos) {
+    // Emit raw viewport coordinates — MainWindow converts via PdfViewer::viewportToPdf()
+    // and runs the font-detection + dialog there (needs Poppler document access).
+    emit annotationCommitted({
+        {"type", "addtext"},
+        {"vpX",  screenPos.x()},
+        {"vpY",  screenPos.y()}
+    });
+}
+
 void AnnotationOverlay::commitSignature(const QPointF& screenPos) {
     if (m_sigImage.isNull()) return;
 
-    // Convert the ghost CENTER (cursor) to PDF coords, then shift to bottom-left.
-    // Using blScreen directly causes a half-height offset because sigHPt cancels
-    // in the round-trip; the correct anchor is the ghost center mapped to PDF.
-    auto [cx, cy] = toPdf(screenPos);
-    double x = cx - m_sigWPt / 2.0;
-    double y = cy - m_sigHPt / 2.0;
-
+    // Pass raw VIEWPORT coordinates to PdfViewer.
+    // Do NOT convert through toPdf / m_pageRect here — that rect is the
+    // overlay's cached rect of m_currentPage, which is wrong whenever the
+    // page is partly scrolled off-screen or the user is near a page boundary.
+    // PdfViewer uses mapToScene() (always exact) for the authoritative conversion.
     emit annotationCommitted({
         {"type",  "signature"},
-        {"page",  m_pageIdx},
-        {"x",     x},
-        {"y",     y},
+        {"vpX",   screenPos.x()},   // viewport pixel X of ghost centre
+        {"vpY",   screenPos.y()},   // viewport pixel Y of ghost centre
         {"sigW",  m_sigWPt},
         {"sigH",  m_sigHPt}
     });

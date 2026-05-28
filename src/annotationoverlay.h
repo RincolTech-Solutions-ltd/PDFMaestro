@@ -40,6 +40,7 @@ private:
     void commitStamp(const QPointF& pos);
     void commitRedact(const QPointF& p1, const QPointF& p2);
     void commitSignature(const QPointF& screenPos);
+    void commitAddText(const QPointF& screenPos);
 
     QString m_tool    = "pointer";
     int     m_pageIdx = 0;

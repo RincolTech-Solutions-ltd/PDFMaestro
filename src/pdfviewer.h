@@ -51,6 +51,11 @@ public:
     void beginSignaturePlacement(const QImage& img);
 
     // ── Pending signature overlay API ────────────────────────────────────────
+    // Convert a viewport-pixel point to (pageIdx, PDF x, PDF y).
+    // Uses mapToScene() — always exact regardless of scroll position.
+    struct PagePdfPos { int pageIdx; double xPdf; double yPdf; };
+    PagePdfPos viewportToPdf(QPointF vpPt) const;
+
     // Add a moveable signature overlay at the given PDF coordinates.
     void addSigOverlay(const QImage& img, int pageIdx,
                        double xPdf, double yPdf, double sigWPt, double sigHPt);

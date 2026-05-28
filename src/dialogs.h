@@ -6,6 +6,10 @@
 #include <QListWidget>
 #include <QLabel>
 #include <QCheckBox>
+#include <QComboBox>
+#include <QPlainTextEdit>
+#include <QColor>
+#include <QPushButton>
 
 // ── MergeDialog ───────────────────────────────────────────────────────────────
 // Lets the user build an ordered list of PDF files to merge.
@@ -45,6 +49,37 @@ private:
     QSpinBox*  m_n;
     QCheckBox* m_modeEachPage;
     QCheckBox* m_modeEveryN;
+};
+
+// ── AddTextDialog ─────────────────────────────────────────────────────────────
+// Dialog for injecting text into a PDF page content stream.
+// Pre-populated with auto-detected font name and size from nearby text.
+class AddTextDialog : public QDialog {
+    Q_OBJECT
+public:
+    // detectedPdfFont: e.g. "Helvetica-Bold", "Times-Roman"  (standard PDF name)
+    // detectedSize: font size in pt detected near the click point (0 = use 12)
+    explicit AddTextDialog(const QString& detectedPdfFont = "Helvetica",
+                           double detectedSize = 12.0,
+                           QWidget* parent = nullptr);
+
+    QString text()        const;   // text the user typed
+    QString pdfFontName() const;   // e.g. "Helvetica-Bold"
+    double  fontSize()    const;
+    QColor  color()       const;
+
+private slots:
+    void pickColor();
+    void updateColorButton();
+
+private:
+    QPlainTextEdit*  m_textEdit;
+    QComboBox*       m_familyCombo;   // Helvetica / Times / Courier
+    QCheckBox*       m_boldCheck;
+    QCheckBox*       m_italicCheck;
+    QDoubleSpinBox*  m_sizeBox;
+    QPushButton*     m_colorBtn;
+    QColor           m_color;
 };
 
 // ── CropDialog ────────────────────────────────────────────────────────────────

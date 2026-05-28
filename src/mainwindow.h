@@ -5,6 +5,9 @@
 #include <QLabel>
 #include <QActionGroup>
 #include <QImage>
+#include <QList>
+#include <QByteArray>
+#include <memory>
 #include "config.h"
 #include "pdfviewer.h"
 #include "pagemanager.h"
@@ -32,6 +35,10 @@ private slots:
     void onSave();
     void onSaveAs();
     void onClose();
+
+    // Undo / Redo
+    void onUndo();
+    void onRedo();
 
     // Edit / Page ops
     void onMerge();
@@ -84,6 +91,7 @@ private:
     void setModified(bool v);
     void pushPageCountToPageManager();
     void burnPendingSignatures();   // harvest pending sigs → QPDF just before Save
+    void pushUndoState();           // snapshot current QPDF to undo stack
 
     // Core objects
     Config*      m_config;
@@ -91,11 +99,17 @@ private:
     PageManager* m_pageManager;
     SearchBar*   m_searchBar;
 
-    // QPDF state — all operations work on this
-    QPDF         m_qpdf;
+    // QPDF state — all operations work on this.
+    // Held as unique_ptr so it can be reconstructed in-place for undo/redo.
+    std::unique_ptr<QPDF> m_qpdf;
     bool         m_qpdfLoaded = false;
     QString      m_currentPath;
     bool         m_modified   = false;
+
+    // Undo / Redo stacks (serialised QPDF snapshots)
+    QList<QByteArray> m_undoStack;
+    QList<QByteArray> m_redoStack;
+    static constexpr int MAX_UNDO = 20;
 
     // Pending signature image (held while user is in drag-to-place mode)
     QImage       m_pendingSig;
@@ -113,6 +127,8 @@ private:
     QLabel*      m_statusPath;
 
     // Actions
+    QAction* m_actUndo;
+    QAction* m_actRedo;
     QAction* m_actSave;
     QAction* m_actSaveAs;
     QAction* m_actClose;

@@ -6,6 +6,7 @@
 #include <QFile>
 #include <QBuffer>
 #include <QByteArray>
+#include <QStringList>
 #include <cmath>
 #include <memory>
 #include <sstream>
@@ -380,6 +381,107 @@ void overlayImageOnPage(QPDF& pdf, int pageIdx, const QImage& img,
     auto mb = pageObj.getKey("/MediaBox");
     double pw = mb.getArrayItem(2).getNumericValue();
     overlayImageOnPage(pdf, pageIdx, img, sigW, sigH, pw - sigW - margin, margin);
+}
+
+// ── Text injection ────────────────────────────────────────────────────────────
+
+// Escape a Latin-1 string for use inside a PDF literal string ( ... ).
+static std::string escapePdfLiteral(const QString& text) {
+    std::string out;
+    out.reserve(static_cast<size_t>(text.size() + 8));
+    for (QChar qc : text) {
+        const unsigned int u = qc.unicode();
+        if (u > 255) {
+            out += '?';   // non-Latin-1: substitute; UTF-16BE support is a follow-up
+            continue;
+        }
+        const char c = static_cast<char>(u & 0xFF);
+        switch (c) {
+        case '(':  out += "\\("; break;
+        case ')':  out += "\\)"; break;
+        case '\\': out += "\\\\"; break;
+        default:   out += c; break;
+        }
+    }
+    return out;
+}
+
+// Ensure the page has a /Resources /Font entry for the given standard Type1 font.
+// Returns the resource key (e.g. "/Helvetica-Bold") to use in content stream.
+static std::string ensureFontResource(QPDF& pdf,
+                                       QPDFObjectHandle& pageObj,
+                                       const std::string& baseFont)
+{
+    if (!pageObj.hasKey("/Resources"))
+        pageObj.replaceKey("/Resources", QPDFObjectHandle::newDictionary());
+    auto res = pageObj.getKey("/Resources");
+    if (!res.hasKey("/Font"))
+        res.replaceKey("/Font", QPDFObjectHandle::newDictionary());
+    auto fontDict = res.getKey("/Font");
+
+    // Use the font name itself as the resource key to keep it idempotent.
+    // Strip hyphens so e.g. "Helvetica-Bold" → key "/HelvB" to stay safe with
+    // PDF name syntax (hyphens are valid but let's be explicit).
+    // Actually hyphens are perfectly fine in PDF names, so use the name directly.
+    std::string key = "/" + baseFont;
+
+    if (!fontDict.hasKey(key)) {
+        auto fontObj = QPDFObjectHandle::newDictionary();
+        fontObj.replaceKey("/Type",     QPDFObjectHandle::newName("/Font"));
+        fontObj.replaceKey("/Subtype",  QPDFObjectHandle::newName("/Type1"));
+        fontObj.replaceKey("/BaseFont", QPDFObjectHandle::newName("/" + baseFont));
+        fontDict.replaceKey(key, pdf.makeIndirectObject(fontObj));
+    }
+    return key;
+}
+
+void injectText(QPDF& pdf, int pageIdx,
+                double x, double y,
+                const QString& text,
+                const QString& pdfFontName,
+                double fontSize,
+                QColor color)
+{
+    auto ps = pages(pdf);
+    if (pageIdx < 0 || pageIdx >= static_cast<int>(ps.size())) return;
+
+    auto pageObj  = ps[pageIdx].getObjectHandle();
+    const std::string baseFont = pdfFontName.toStdString();
+    const std::string fontKey  = ensureFontResource(pdf, pageObj, baseFont);
+
+    // Build the content stream addition.
+    std::ostringstream cs;
+    cs << "\nq\n";
+
+    // Non-stroking colour (rg = DeviceRGB)
+    cs << (color.redF())   << " "
+       << (color.greenF()) << " "
+       << (color.blueF())  << " rg\n";
+
+    cs << "BT\n";
+    cs << fontKey << " " << fontSize << " Tf\n";
+    // Leading: 1.2× font size (single-space)
+    cs << (fontSize * 1.2) << " TL\n";
+
+    // Split on newlines; each line rendered with T* (move to next line)
+    const QStringList lines = text.split('\n');
+    bool first = true;
+    for (const QString& line : lines) {
+        if (first) {
+            cs << x << " " << y << " Td\n";
+            first = false;
+        } else {
+            cs << "T*\n";
+        }
+        cs << "(" << escapePdfLiteral(line) << ") Tj\n";
+    }
+
+    cs << "ET\n";
+    cs << "Q\n";
+
+    std::string existing = streamToStr(pageObj.getKey("/Contents"));
+    existing += cs.str();
+    pageObj.replaceKey("/Contents", QPDFObjectHandle::newStream(&pdf, existing));
 }
 
 } // namespace Operations

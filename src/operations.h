@@ -4,6 +4,7 @@
 #include <QPair>
 #include <QImage>
 #include <QBuffer>
+#include <QColor>
 #include <qpdf/QPDF.hh>
 
 namespace Operations {
@@ -46,6 +47,18 @@ void overlayImageOnPage(QPDF& pdf, int pageIdx, const QImage& img,
 // Convenience: place at bottom-right with margin
 void overlayImageOnPage(QPDF& pdf, int pageIdx, const QImage& img,
                         double sigW, double sigH, double margin = 20.0);
+
+// Inject plain text directly into the page content stream.
+// (x, y) = baseline start in PDF points, origin bottom-left.
+// pdfFontName must be one of the 14 standard PDF Type1 font names
+// (e.g. "Helvetica", "Helvetica-Bold", "Times-Roman", "Courier").
+// Multi-line text: split by '\n', lines spaced by fontSize.
+void injectText(QPDF& pdf, int pageIdx,
+                double x, double y,
+                const QString& text,
+                const QString& pdfFontName,
+                double fontSize,
+                QColor color = Qt::black);
 
 // Serialize pdf to QByteArray (for in-memory Poppler reload)
 QByteArray toBytes(QPDF& pdf);

@@ -11,6 +11,7 @@
 #include <QButtonGroup>
 #include <QStackedWidget>
 #include <QLabel>
+#include <QColorDialog>
 
 // ── MergeDialog ───────────────────────────────────────────────────────────────
 
@@ -157,6 +158,121 @@ SplitDialog::Mode SplitDialog::mode() const {
 
 QString SplitDialog::rangeText() const { return m_ranges->text(); }
 int     SplitDialog::everyN()    const { return m_n->value(); }
+
+// ── AddTextDialog ─────────────────────────────────────────────────────────────
+
+AddTextDialog::AddTextDialog(const QString& detectedPdfFont,
+                             double detectedSize,
+                             QWidget* parent)
+    : QDialog(parent)
+    , m_color(Qt::black)
+{
+    setWindowTitle("Add Text");
+    setMinimumWidth(400);
+
+    auto* root = new QVBoxLayout(this);
+    auto* form = new QFormLayout;
+
+    // Text input
+    m_textEdit = new QPlainTextEdit(this);
+    m_textEdit->setFixedHeight(90);
+    m_textEdit->setPlaceholderText("Type text here…");
+    form->addRow("Text:", m_textEdit);
+
+    // Font family
+    m_familyCombo = new QComboBox(this);
+    m_familyCombo->addItem("Helvetica (Sans-serif)",  "Helvetica");
+    m_familyCombo->addItem("Times (Serif)",           "Times");
+    m_familyCombo->addItem("Courier (Monospace)",     "Courier");
+
+    // Bold / Italic
+    m_boldCheck   = new QCheckBox("Bold",   this);
+    m_italicCheck = new QCheckBox("Italic", this);
+
+    auto* styleRow = new QHBoxLayout;
+    styleRow->addWidget(m_familyCombo);
+    styleRow->addWidget(m_boldCheck);
+    styleRow->addWidget(m_italicCheck);
+    styleRow->addStretch();
+    form->addRow("Font:", styleRow);
+
+    // Size
+    m_sizeBox = new QDoubleSpinBox(this);
+    m_sizeBox->setRange(4.0, 288.0);
+    m_sizeBox->setSingleStep(0.5);
+    m_sizeBox->setSuffix(" pt");
+    m_sizeBox->setValue(detectedSize > 0 ? detectedSize : 12.0);
+    form->addRow("Size:", m_sizeBox);
+
+    // Color
+    m_colorBtn = new QPushButton(this);
+    m_colorBtn->setFixedWidth(80);
+    connect(m_colorBtn, &QPushButton::clicked, this, &AddTextDialog::pickColor);
+    updateColorButton();
+    form->addRow("Color:", m_colorBtn);
+
+    root->addLayout(form);
+
+    auto* btns = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
+    connect(btns, &QDialogButtonBox::accepted, this, &QDialog::accept);
+    connect(btns, &QDialogButtonBox::rejected, this, &QDialog::reject);
+    root->addWidget(btns);
+
+    // Pre-populate from detected font name
+    // Parse "Helvetica-BoldOblique", "Times-Bold", "Courier-Oblique", etc.
+    const QString dn = detectedPdfFont.toLower();
+    if (dn.contains("times") || dn.contains("roman"))
+        m_familyCombo->setCurrentIndex(1);
+    else if (dn.contains("courier") || dn.contains("mono"))
+        m_familyCombo->setCurrentIndex(2);
+    else
+        m_familyCombo->setCurrentIndex(0);
+
+    m_boldCheck->setChecked(dn.contains("bold"));
+    m_italicCheck->setChecked(dn.contains("italic") || dn.contains("oblique"));
+}
+
+QString AddTextDialog::text() const {
+    return m_textEdit->toPlainText();
+}
+
+QString AddTextDialog::pdfFontName() const {
+    const QString family = m_familyCombo->currentData().toString();
+    const bool bold   = m_boldCheck->isChecked();
+    const bool italic = m_italicCheck->isChecked();
+
+    if (family == "Times") {
+        if (bold && italic) return "Times-BoldItalic";
+        if (bold)           return "Times-Bold";
+        if (italic)         return "Times-Italic";
+        return "Times-Roman";
+    }
+    if (family == "Courier") {
+        if (bold && italic) return "Courier-BoldOblique";
+        if (bold)           return "Courier-Bold";
+        if (italic)         return "Courier-Oblique";
+        return "Courier";
+    }
+    // Helvetica (default)
+    if (bold && italic) return "Helvetica-BoldOblique";
+    if (bold)           return "Helvetica-Bold";
+    if (italic)         return "Helvetica-Oblique";
+    return "Helvetica";
+}
+
+double AddTextDialog::fontSize() const { return m_sizeBox->value(); }
+QColor AddTextDialog::color()    const { return m_color; }
+
+void AddTextDialog::pickColor() {
+    QColor c = QColorDialog::getColor(m_color, this, "Text Color");
+    if (c.isValid()) { m_color = c; updateColorButton(); }
+}
+
+void AddTextDialog::updateColorButton() {
+    m_colorBtn->setStyleSheet(
+        QString("background-color: %1; border: 1px solid #666;").arg(m_color.name()));
+    m_colorBtn->setText(m_color.name().toUpper());
+}
 
 // ── CropDialog ────────────────────────────────────────────────────────────────
 
